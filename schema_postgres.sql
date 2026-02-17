@@ -13,7 +13,6 @@ CREATE TABLE IF NOT EXISTS login (
     ativo    BOOLEAN           NOT NULL DEFAULT TRUE
 );
 
--- Usuário admin de exemplo (senha: 1234, hash gerado por streamlit-authenticator / bcrypt)
 INSERT INTO login (username, nome, senha_hash, ativo)
 VALUES (
     'admin',
@@ -22,3 +21,15 @@ VALUES (
     TRUE
 )
 ON CONFLICT (username) DO NOTHING;
+
+
+-- Tabela para solicitações de troca de senha
+CREATE TABLE IF NOT EXISTS solicitacoes_troca_senha (
+    id SERIAL PRIMARY KEY,
+    usuario_id INTEGER NOT NULL REFERENCES login(id),
+    data_solicitacao TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(20) NOT NULL DEFAULT 'pendente', -- pendente, aprovado, rejeitado
+    data_resposta TIMESTAMP,
+    admin_id INTEGER REFERENCES login(id),
+    observacao TEXT
+);

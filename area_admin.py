@@ -29,12 +29,25 @@ def area_admin(authenticator) -> None:
     name = st.session_state.get("name") or "Administrador"
     username = st.session_state.get("username") or "admin"
 
+
+    # Buscar quantidade de solicitações pendentes
+    from db import listar_solicitacoes_troca_senha
+    try:
+        solicitacoes_pendentes = listar_solicitacoes_troca_senha(status="pendente")
+        qtd_solicitacoes = len(solicitacoes_pendentes)
+    except Exception:
+        qtd_solicitacoes = 0
+
     with st.sidebar:
         st.header("Área do administrador")
         st.markdown(f"Admin: {name} ({username})")
         menu = st.radio(
             "Menu",
-            ["Associados", "Mensalidades"],
+            [
+                "Associados",
+                "Mensalidades",
+                f"Solicitações de Troca de Senha ({qtd_solicitacoes})"
+            ],
             key="admin_menu",
         )
         authenticator.logout("Sair", "sidebar")
@@ -64,8 +77,41 @@ def area_admin(authenticator) -> None:
     if menu == "Mensalidades":
         _render_mensalidades_section()
         return
-
+    elif menu.startswith("Solicitações de Troca de Senha"):
+        _render_solicitacoes_troca_senha_section(username, qtd_solicitacoes)
+        return
     _render_associados_section()
+
+
+def _render_solicitacoes_troca_senha_section(admin_username, qtd_solicitacoes):
+    """Renderiza a seção de aprovação de solicitações de troca de senha."""
+    st.subheader(f"Solicitações de Troca de Senha ({qtd_solicitacoes})")
+    from db import listar_solicitacoes_troca_senha, atualizar_status_solicitacao_troca_senha, obter_login_id
+
+    solicitacoes = listar_solicitacoes_troca_senha(status="pendente")
+    if not solicitacoes:
+        st.info("Nenhuma solicitação pendente.")
+        return
+
+    for s in solicitacoes:
+        with st.expander(f"{s['nome']} ({s['username']}) - {s['data_solicitacao']:%d/%m/%Y %H:%M}"):
+            st.write(f"**Usuário:** {s['username']}")
+            st.write(f"**Nome:** {s['nome']}")
+            st.write(f"**Data da solicitação:** {s['data_solicitacao']:%d/%m/%Y %H:%M}")
+            st.write(f"**Observação:** {s['observacao'] or '-'}")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button(f"Aprovar", key=f"aprovar_{s['id']}"):
+                    admin_id = obter_login_id(admin_username)
+                    atualizar_status_solicitacao_troca_senha(s['id'], 'aprovado', admin_id)
+                    st.success("Solicitação aprovada! Oriente o usuário a redefinir a senha.")
+                    st.rerun()
+            with col2:
+                if st.button(f"Rejeitar", key=f"rejeitar_{s['id']}"):
+                    admin_id = obter_login_id(admin_username)
+                    atualizar_status_solicitacao_troca_senha(s['id'], 'rejeitado', admin_id)
+                    st.warning("Solicitação rejeitada.")
+                    st.rerun()
 
 
 def _render_mensalidades_section():

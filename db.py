@@ -1,3 +1,4 @@
+
 import os
 import re
 from typing import Any, Dict, List, Optional
@@ -871,3 +872,65 @@ def buscar_comprovante_pagamento(pagamento_id: int) -> Optional[bytes]:
             if resultado and resultado["comprovante"]:
                 return bytes(resultado["comprovante"])
             return None
+
+def inserir_solicitacao_troca_senha(usuario_id: int, observacao: str = None) -> int:
+    """Insere uma nova solicitação de troca de senha para o usuário informado."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO solicitacoes_troca_senha (usuario_id, observacao)
+                VALUES (%s, %s)
+                RETURNING id
+                """,
+                (usuario_id, observacao),
+            )
+            solicitacao_id = cur.fetchone()["id"]
+            conn.commit()
+            return solicitacao_id
+
+def listar_solicitacoes_troca_senha(status: str = 'pendente'):
+    """Lista solicitações de troca de senha, filtrando por status."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT s.id, l.username, l.nome, s.data_solicitacao, s.status, s.observacao
+                FROM solicitacoes_troca_senha s
+                JOIN login l ON s.usuario_id = l.id
+                WHERE s.status = %s
+                ORDER BY s.data_solicitacao DESC
+                """,
+                (status,),
+            )
+            return cur.fetchall()
+
+
+def atualizar_status_solicitacao_troca_senha(solicitacao_id: int, status: str, admin_id: int = None, observacao: str = None):
+    """Atualiza o status de uma solicitação de troca de senha."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE solicitacoes_troca_senha
+                SET status = %s, data_resposta = CURRENT_TIMESTAMP, admin_id = %s, observacao = COALESCE(%s, observacao)
+                WHERE id = %s
+                """,
+                (status, admin_id, observacao, solicitacao_id),
+            )
+            conn.commit()
+
+
+def existe_solicitacao_troca_senha_pendente(usuario_id: int) -> bool:
+    """Verifica se já existe uma solicitação de troca de senha pendente para o usuário."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1 FROM solicitacoes_troca_senha
+                WHERE usuario_id = %s AND status = 'pendente'
+                LIMIT 1
+                """,
+                (usuario_id,)
+            )
+            return cur.fetchone() is not None

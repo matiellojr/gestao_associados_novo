@@ -13,7 +13,9 @@ from db import (
     inserir_associado,
     atualizar_senha_usuario,
     verificar_usuario_existe,
+    existe_solicitacao_troca_senha_pendente,
 )
+
 from area_associado import area_associado
 from area_admin import area_admin
 from dialogs import dialog_cadastro_sucesso, dialog_usuario_ja_existe
@@ -38,7 +40,7 @@ def main():
     authenticator = stauth.Authenticate(
         credentials,
         "gestao_associado_cookie",
-        "chave_assinatura_mude_isto",
+        "chave_assinatura_segura_1234567890abcdef",
         cookie_expiry_days=30,
     )
 
@@ -63,7 +65,7 @@ def main():
 
     with aba_novo:
         _render_cadastro_tab()
-    
+
     with aba_senha:
         _render_esqueceu_senha_tab()
 
@@ -206,41 +208,102 @@ def _render_cadastro_tab():
 
 def _render_esqueceu_senha_tab():
     """Renderiza a aba de recuperação de senha."""
-    st.markdown("### Redefinir senha")
-    st.info("Digite seu CPF e escolha uma nova senha.")
-    
-    cpf_recuperacao = st.text_input("CPF", help="Digite apenas números", key="rec_cpf")
-    nova_senha_rec = st.text_input("Nova senha", type="password", key="rec_nova_senha")
-    confirma_senha_rec = st.text_input("Confirmar nova senha", type="password", key="rec_conf_senha")
-    
-    submitted_rec = st.button("Redefinir senha", key="btn_redefinir")
-    
-    if submitted_rec:
-        if not cpf_recuperacao or not nova_senha_rec or not confirma_senha_rec:
-            st.error("Preencha todos os campos.")
-        elif nova_senha_rec != confirma_senha_rec:
-            st.error("As senhas não conferem.")
-        elif len(nova_senha_rec) < 4:
-            st.error("A senha deve ter no mínimo 4 caracteres.")
-        else:
-            try:
-                cpf_digits = re.sub(r"\D", "", cpf_recuperacao or "")
-                if len(cpf_digits) != 11:
-                    raise ValueError("CPF deve conter 11 dígitos.")
-                
-                # Verifica se o usuário existe
-                if not verificar_usuario_existe(cpf_digits):
-                    st.error("CPF não encontrado no sistema.")
-                else:
-                    # Atualiza a senha
-                    senha_hash = stauth.Hasher.hash_list([nova_senha_rec])[0]
-                    atualizar_senha_usuario(cpf_digits, senha_hash)
-                    st.success("✅ Senha redefinida com sucesso! Faça login com sua nova senha.")
-                    
-            except ValueError as e:
-                st.error(str(e))
-            except Exception as e:  # noqa: BLE001
-                st.error(f"Erro ao redefinir senha: {e}")
+    st.markdown("### Solicitar ou redefinir senha")
+    # Limpa campos após rerun, se necessário
+    limpar = st.session_state.pop("limpar_campos_esqueceu_senha", False)
+    # Inicializa valores default para evitar UnboundLocalError
+    cpf_value = ""
+    obs_value = "Favor me avisar via WhatsApp quando aprovar."
+    nova_senha_value = ""
+    conf_senha_value = ""
+    if not limpar:
+        st.info("Digite seu CPF para solicitar a troca de senha ou redefinir caso já aprovada pelo administrador.")
+        cpf_value = st.session_state.get("rec_cpf", "")
+        obs_value = st.session_state.get("rec_obs", "Favor me avisar via WhatsApp quando aprovar.")
+        nova_senha_value = st.session_state.get("rec_nova_senha", "")
+        conf_senha_value = st.session_state.get("rec_conf_senha", "")
+    # Não modificar session_state['rec_cpf'] após o widget ser instanciado
+    cpf_recuperacao = st.text_input("CPF", help="Digite apenas números", key="rec_cpf", value=cpf_value)
+    from db import obter_login_id, inserir_solicitacao_troca_senha
+
+    if cpf_recuperacao:
+        cpf_digits = re.sub(r"\D", "", cpf_recuperacao or "")
+        if len(cpf_digits) == 11:
+            usuario_id = obter_login_id(cpf_digits)
+            if not usuario_id:
+                st.error("CPF não encontrado no sistema.")
+                return
+            # Verifica se há solicitação aprovada
+            from db import get_connection
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT status FROM solicitacoes_troca_senha
+                        WHERE usuario_id = %s
+                        ORDER BY data_solicitacao DESC LIMIT 1
+                    """, (usuario_id,))
+                    row = cur.fetchone()
+            if row and row["status"] == "aprovado":
+                if not st.session_state.get("senha_redefinida_sucesso"):
+                    if not st.session_state.get("mostrar_dialog_solicitacao_aprovada"):
+                        st.session_state["mostrar_dialog_solicitacao_aprovada"] = True
+                        from dialogs import dialog_solicitacao_aprovada
+                        dialog_solicitacao_aprovada()
+                        
+                    nova_senha_rec = st.text_input("Nova senha", type="password", key="rec_nova_senha")
+                    confirma_senha_rec = st.text_input("Confirmar nova senha", type="password", key="rec_conf_senha")
+                    submitted_rec = st.button("Redefinir senha", key="btn_redefinir")
+                    if submitted_rec:
+                        if not nova_senha_rec or not confirma_senha_rec:
+                            st.error("Preencha todos os campos.")
+                        elif nova_senha_rec != confirma_senha_rec:
+                            st.error("As senhas não conferem.")
+                        elif len(nova_senha_rec) < 4:
+                            st.error("A senha deve ter no mínimo 4 caracteres.")
+                        else:
+                            try:
+                                senha_hash = stauth.Hasher.hash_list([nova_senha_rec])[0]
+                                atualizar_senha_usuario(cpf_digits, senha_hash)
+                                # Atualiza status da solicitação para 'finalizado'
+                                with get_connection() as conn:
+                                    with conn.cursor() as cur:
+                                        cur.execute("""
+                                            UPDATE solicitacoes_troca_senha
+                                            SET status = 'finalizado', data_resposta = CURRENT_TIMESTAMP
+                                            WHERE usuario_id = %s AND status = 'aprovado'
+                                        """, (usuario_id,))
+                                        conn.commit()
+                                st.session_state["senha_redefinida_sucesso"] = True
+                                st.success("✅ Senha redefinida com sucesso! Faça login com sua nova senha.")
+                            except Exception as e:
+                                st.error(f"Erro ao redefinir senha: {e}")
+                # Não exibe mais o dialog_senha_redefinida automaticamente
+
+            else:
+                st.info("Se deseja trocar a senha, solicite ao administrador.")
+                observacao = st.text_area(
+                    "Observação (opcional)",
+                    value=obs_value,
+                    key="rec_obs"
+                )
+                submitted_solic = st.button("Solicitar troca de senha", key="btn_solicitar_troca")
+                if submitted_solic:
+                    from db import existe_solicitacao_troca_senha_pendente
+                    if existe_solicitacao_troca_senha_pendente(usuario_id):
+                        st.warning("Já existe uma solicitação de troca de senha pendente para este usuário. Aguarde a aprovação do administrador.")
+                    else:
+                        try:
+                            solicitacao_id = inserir_solicitacao_troca_senha(usuario_id, observacao)
+                            from dialogs import dialog_solicitacao_troca_senha
+                            dialog_solicitacao_troca_senha()
+                            st.session_state["mostrar_dialog_solicitacao_troca_senha"] = True
+                        except Exception as e:
+                            st.error(f"Erro ao registrar solicitação: {e}")
+            # Não limpar session_state diretamente após renderização dos widgets para evitar StreamlitAPIException
+            # Toda limpeza é feita apenas via value= nos widgets, controlado pelo flag 'limpar_campos_esqueceu_senha'
+        elif len(cpf_digits) > 0:
+            if not limpar:
+                st.warning("CPF deve conter 11 dígitos.")
 
 
 if __name__ == "__main__":

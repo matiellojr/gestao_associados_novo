@@ -9,14 +9,15 @@ from decimal import Decimal
 def esconder_botao_fechar_dialog() -> None:
     """Esconde o botão "X" de diálogos específicos via CSS.
 
-    Atualmente aplicado ao dialog_sucesso_edicao e ao dialog_erro_pagamento
-    (⚠️ Pagamento inválido), usando marcadores internos em cada diálogo.
+    Atualmente aplicado ao dialog_sucesso_edicao, dialog_solicitacao_troca_senha
+    (🔒 Solicitação enviada!) e ao dialog_erro_pagamento (⚠️ Pagamento inválido), usando marcadores internos em cada diálogo.
     """
     st.markdown(
         """
         <style>
         /* Esconde o X do diálogo de sucesso de edição e do diálogo de pagamento inválido */
         div[data-baseweb="modal"]:has(#dialog_sucesso_marker) button[aria-label="Close"],
+        div[data-baseweb="modal"]:has(#dialog_solicitacao_troca_senha_marker) button[aria-label="Close"],
         div[data-baseweb="modal"]:has(#dialog_pagamento_invalido_marker) button[aria-label="Close"] {
             display: none !important;
         }
