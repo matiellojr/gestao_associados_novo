@@ -141,12 +141,12 @@ def area_associado(authenticator, username: str) -> None:
             # Configuração da grid AgGrid
             gb_m = GridOptionsBuilder.from_dataframe(df_mens)
             gb_m.configure_column("id", header_name="ID", width=80)
-            gb_m.configure_column("data_vencimento", header_name="Vencimento", width=120)
+            gb_m.configure_column("data_vencimento", header_name="Vencimento", width=120, sort="asc")
             gb_m.configure_column("status_mensalidade", header_name="Status Mensalidade", width=160)
             gb_m.configure_column("status_pagamento", header_name="Status Pagamento", width=150)
 
             # Ocultar colunas não necessárias (não mostra nome do associado pois é ele mesmo)
-            for col in ["id", "valor", "data_emissao", "nome_completo", "associado_id", "status_mensalidade_id", "pagamento_id", "data_pagamento"]:
+            for col in ["id", "valor", "data_emissao", "nome_completo", "associado_id", "status_mensalidade_id", "pagamento_id", "data_pagamento", "status_pagamento_id"]:
                 if col in df_mens.columns:
                     gb_m.configure_column(col, hide=True)
 
@@ -157,7 +157,8 @@ def area_associado(authenticator, username: str) -> None:
                         this.eGui = document.createElement('button');
                         this.eGui.innerHTML = 'Editar';
                         this.eGui.style.cssText = 'padding:3px 8px; border:none; background-color:#2c7be5; color:white; border-radius:4px; cursor:pointer;';
-                        this.eGui.addEventListener('click', () => {
+                        this.eGui.addEventListener('click', (event) => {
+                            event.stopPropagation();
                             if (params.api && params.api.deselectAll) {
                                 params.api.deselectAll();
                             }
@@ -200,9 +201,19 @@ def area_associado(authenticator, username: str) -> None:
 
             selected_rows_m = grid_response_m["selected_rows"]
 
+            # Só abre o diálogo se houver uma NOVA seleção (ignora cliques em células de linhas já selecionadas)
             if selected_rows_m is not None and len(selected_rows_m) > 0:
-                row_m = selected_rows_m.iloc[0].to_dict()
-                dialog_editar_mensalidade(row_m)
+                row_m_id = selected_rows_m.iloc[0].get("id")
+                last_selected_id = st.session_state.get("last_selected_mensalidade_id")
+                
+                # Só abre diálogo se for uma nova seleção diferente
+                if row_m_id != last_selected_id:
+                    st.session_state["last_selected_mensalidade_id"] = row_m_id
+                    row_m = selected_rows_m.iloc[0].to_dict()
+                    dialog_editar_mensalidade(row_m)
+            else:
+                # Limpa o ID quando não há seleção
+                st.session_state.pop("last_selected_mensalidade_id", None)
         return
 
     st.subheader("Dados pessoais")

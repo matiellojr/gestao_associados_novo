@@ -11,6 +11,8 @@ from db import (
     init_db,
     obter_login_id,
     inserir_associado,
+    atualizar_senha_usuario,
+    verificar_usuario_existe,
 )
 from area_associado import area_associado
 from area_admin import area_admin
@@ -54,13 +56,16 @@ def main():
 
     # Se não autenticado, mostra página de login/cadastro
     st.title("Gestão de Associados")
-    aba_login, aba_novo = st.tabs(["Login", "Cadastrar novo associado"])
+    aba_login, aba_novo, aba_senha = st.tabs(["Login", "Cadastrar novo associado", "Esqueceu a senha?"])
 
     with aba_login:
         _render_login_tab(authenticator)
 
     with aba_novo:
         _render_cadastro_tab()
+    
+    with aba_senha:
+        _render_esqueceu_senha_tab()
 
 
 def _render_login_tab(authenticator):
@@ -197,6 +202,45 @@ def _render_cadastro_tab():
                     st.error(str(e))
             except Exception as e:  # noqa: BLE001
                 st.error(f"Erro ao cadastrar usuário: {e}")
+
+
+def _render_esqueceu_senha_tab():
+    """Renderiza a aba de recuperação de senha."""
+    st.markdown("### Redefinir senha")
+    st.info("Digite seu CPF e escolha uma nova senha.")
+    
+    cpf_recuperacao = st.text_input("CPF", help="Digite apenas números", key="rec_cpf")
+    nova_senha_rec = st.text_input("Nova senha", type="password", key="rec_nova_senha")
+    confirma_senha_rec = st.text_input("Confirmar nova senha", type="password", key="rec_conf_senha")
+    
+    submitted_rec = st.button("Redefinir senha", key="btn_redefinir")
+    
+    if submitted_rec:
+        if not cpf_recuperacao or not nova_senha_rec or not confirma_senha_rec:
+            st.error("Preencha todos os campos.")
+        elif nova_senha_rec != confirma_senha_rec:
+            st.error("As senhas não conferem.")
+        elif len(nova_senha_rec) < 4:
+            st.error("A senha deve ter no mínimo 4 caracteres.")
+        else:
+            try:
+                cpf_digits = re.sub(r"\D", "", cpf_recuperacao or "")
+                if len(cpf_digits) != 11:
+                    raise ValueError("CPF deve conter 11 dígitos.")
+                
+                # Verifica se o usuário existe
+                if not verificar_usuario_existe(cpf_digits):
+                    st.error("CPF não encontrado no sistema.")
+                else:
+                    # Atualiza a senha
+                    senha_hash = stauth.Hasher.hash_list([nova_senha_rec])[0]
+                    atualizar_senha_usuario(cpf_digits, senha_hash)
+                    st.success("✅ Senha redefinida com sucesso! Faça login com sua nova senha.")
+                    
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Erro ao redefinir senha: {e}")
 
 
 if __name__ == "__main__":

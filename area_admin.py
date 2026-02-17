@@ -85,6 +85,9 @@ def _render_lancar_mensalidade():
     """Renderiza o formulário de lançamento de mensalidade."""
     st.markdown("### Nova Mensalidade")
     
+    # Contador para resetar o formulário
+    form_counter = st.session_state.get("lancar_mens_form_counter", 0)
+    
     try:
         associados_disponiveis = listar_associados_contribuintes_habilitados()
     except Exception as e:  # noqa: BLE001
@@ -97,25 +100,33 @@ def _render_lancar_mensalidade():
         opcoes_assoc = {
             f"{a['nome_completo']} - {a['cpf']}": a["id"] for a in associados_disponiveis
         }
+        opcoes_lista = [""] + list(opcoes_assoc.keys())
         associado_sel = st.selectbox(
             "Selecione o associado",
-            list(opcoes_assoc.keys()),
-            key="lancar_mens_associado",
+            opcoes_lista,
+            key=f"lancar_mens_associado_{form_counter}",
         )
+        
+        if not associado_sel:
+            st.info("Selecione um associado para continuar.")
+            return
+            
         associado_id = opcoes_assoc[associado_sel]
         
         valor = st.number_input(
             "Valor da Mensalidade (R$)",
             min_value=0.0,
+            value=0.0,
             step=10.0,
             format="%.2f",
-            key="lancar_mens_valor",
+            key=f"lancar_mens_valor_{form_counter}",
         )
         
         data_vencimento = st.date_input(
             "Data de Vencimento",
+            value=date.today(),
             format="DD/MM/YYYY",
-            key="lancar_mens_venc",
+            key=f"lancar_mens_venc_{form_counter}",
         )
 
         status_mens_labels = {
@@ -129,7 +140,7 @@ def _render_lancar_mensalidade():
             format_func=lambda x: status_mens_labels.get(x, str(x)),
             index=0,
             disabled=True,
-            key="lancar_mens_status",
+            key=f"lancar_mens_status_{form_counter}",
             help="Novas mensalidades começam como 'Não Pago'.",
         )
         
@@ -155,7 +166,11 @@ def _render_lancar_mensalidade():
                 nome_associado = associado_sel.split(" - ")[0] if " - " in associado_sel else associado_sel
                 mes_ano = data_vencimento.strftime("%m/%Y")
                 
-                st.session_state["msg_sucesso"] = f"Mensalidade lançada para {nome_associado} do mês/ano {mes_ano} com sucesso!"
+                st.session_state["msg_sucesso"] = f"Mensalidade lançada para {nome_associado} do mês/ano {mes_ano}!"
+                
+                # Incrementar contador para resetar o formulário
+                st.session_state["lancar_mens_form_counter"] = form_counter + 1
+                
                 st.rerun()
             except ValueError as e:
                 msg = str(e)
@@ -172,6 +187,13 @@ def _render_lancar_mensalidade():
 def _render_listar_mensalidades():
     """Renderiza a grid de mensalidades lançadas."""
     st.markdown("### Mensalidades Lançadas")
+    
+    # Campo de busca
+    busca = st.text_input(
+        "🔍 Buscar por nome ou mês/ano (ex: 01/2026)",
+        placeholder="Digite o nome do associado ou mês/ano do vencimento...",
+        key="busca_mensalidades"
+    )
     
     try:
         mensalidades = listar_mensalidades()
@@ -261,13 +283,44 @@ def _render_listar_mensalidades():
 
     df_mens["acao"] = "Editar"
 
+    # Aplicar filtro de busca
+    if busca and busca.strip():
+        busca_lower = busca.strip().lower()
+        
+        def _match_filter(row):
+            # Buscar no nome
+            nome = str(row.get("nome_completo", "")).lower()
+            if busca_lower in nome:
+                return True
+            
+            # Buscar no mês/ano do vencimento (formato MM/AAAA ou M/AAAA)
+            data_venc_str = str(row.get("data_vencimento", ""))
+            if data_venc_str:
+                # Se a data está no formato DD/MM/AAAA, extrair MM/AAAA
+                parts = data_venc_str.split("/")
+                if len(parts) == 3:
+                    mes_ano = f"{parts[1]}/{parts[2]}"  # MM/AAAA
+                    if busca_lower in mes_ano.lower():
+                        return True
+                # Também buscar na string completa
+                if busca_lower in data_venc_str.lower():
+                    return True
+            
+            return False
+        
+        df_mens = df_mens[df_mens.apply(_match_filter, axis=1)]
+        
+        if df_mens.empty:
+            st.info(f"Nenhuma mensalidade encontrada para: {busca}")
+            return
+
     gb_m = GridOptionsBuilder.from_dataframe(df_mens)
     gb_m.configure_column("nome_completo", header_name="Associado", flex=1)
-    gb_m.configure_column("data_vencimento", header_name="Vencimento", width=120)
+    gb_m.configure_column("data_vencimento", header_name="Vencimento", width=120, sort="asc")
     gb_m.configure_column("status_mensalidade", header_name="Status Mensalidade", width=160)
     gb_m.configure_column("status_pagamento", header_name="Status Pagamento", width=150)
 
-    for col in ["id", "valor", "data_emissao", "associado_id", "status_mensalidade_id", "pagamento_id", "data_pagamento"]:
+    for col in ["id", "valor", "data_emissao", "associado_id", "status_mensalidade_id", "pagamento_id", "data_pagamento", "status_pagamento_id"]:
         if col in df_mens.columns:
             gb_m.configure_column(col, hide=True)
 
@@ -277,7 +330,8 @@ def _render_listar_mensalidades():
                 this.eGui = document.createElement('button');
                 this.eGui.innerHTML = 'Editar';
                 this.eGui.style.cssText = 'padding:3px 8px; border:none; background-color:#2c7be5; color:white; border-radius:4px; cursor:pointer;';
-                this.eGui.addEventListener('click', () => {
+                this.eGui.addEventListener('click', (event) => {
+                    event.stopPropagation();
                     if (params.api && params.api.deselectAll) {
                         params.api.deselectAll();
                     }
@@ -320,9 +374,19 @@ def _render_listar_mensalidades():
 
     selected_rows_m = grid_response_m["selected_rows"]
 
+    # Só abre o diálogo se houver uma NOVA seleção (ignora cliques em células de linhas já selecionadas)
     if selected_rows_m is not None and len(selected_rows_m) > 0:
-        row_m = selected_rows_m.iloc[0].to_dict()
-        dialog_editar_mensalidade(row_m)
+        row_m_id = selected_rows_m.iloc[0].get("id")
+        last_selected_id = st.session_state.get("last_selected_mensalidade_admin_id")
+        
+        # Só abre diálogo se for uma nova seleção diferente
+        if row_m_id != last_selected_id:
+            st.session_state["last_selected_mensalidade_admin_id"] = row_m_id
+            row_m = selected_rows_m.iloc[0].to_dict()
+            dialog_editar_mensalidade(row_m)
+    else:
+        # Limpa o ID quando não há seleção
+        st.session_state.pop("last_selected_mensalidade_admin_id", None)
 
 
 def _render_associados_section():
@@ -401,7 +465,8 @@ def _render_associados_section():
                 this.eGui = document.createElement('button');
                 this.eGui.innerHTML = 'Editar';
                 this.eGui.style.cssText = 'padding:3px 8px; border:none; background-color:#2c7be5; color:white; border-radius:4px; cursor:pointer;';
-                this.eGui.addEventListener('click', () => {
+                this.eGui.addEventListener('click', (event) => {
+                    event.stopPropagation();
                     if (params.api && params.api.deselectAll) {
                         params.api.deselectAll();
                     }
@@ -439,9 +504,16 @@ def _render_associados_section():
 
     selected_rows = grid_response["selected_rows"]
 
+    # Só abre o diálogo se houver uma NOVA seleção (ignora cliques em células de linhas já selecionadas)
     if selected_rows is not None and len(selected_rows) > 0:
-        row = selected_rows.iloc[0].to_dict()
-        dialog_editar_associado(row)
+        row_id = selected_rows.iloc[0].get("id")
+        last_selected_id = st.session_state.get("last_selected_associado_id")
+        
+        # Só abre diálogo se for uma nova seleção diferente
+        if row_id != last_selected_id:
+            st.session_state["last_selected_associado_id"] = row_id
+            row = selected_rows.iloc[0].to_dict()
+            dialog_editar_associado(row)
     else:
-        if "last_selected_row_id" in st.session_state:
-            st.session_state.pop("last_selected_row_id")
+        # Limpa o ID quando não há seleção
+        st.session_state.pop("last_selected_associado_id", None)

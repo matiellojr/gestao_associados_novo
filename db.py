@@ -113,6 +113,46 @@ def obter_login_id(username: str) -> Optional[int]:
             return row["id"] if row else None
 
 
+def verificar_usuario_existe(username: str) -> bool:
+    """Verifica se existe um usuário com o username informado.
+    
+    Args:
+        username: O username (tipicamente CPF sem formatação) a ser verificado
+        
+    Returns:
+        True se o usuário existe, False caso contrário
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM login WHERE username = %s", (username,))
+            return cur.fetchone() is not None
+
+
+def atualizar_senha_usuario(username: str, nova_senha_hash: str) -> None:
+    """Atualiza a senha de um usuário existente.
+    
+    Args:
+        username: O username do usuário
+        nova_senha_hash: O hash da nova senha (já criptografado)
+        
+    Raises:
+        ValueError: Se o usuário não existir
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # Verifica se o usuário existe
+            cur.execute("SELECT id FROM login WHERE username = %s", (username,))
+            if not cur.fetchone():
+                raise ValueError("Usuário não encontrado")
+            
+            # Atualiza a senha
+            cur.execute(
+                "UPDATE login SET senha_hash = %s WHERE username = %s",
+                (nova_senha_hash, username)
+            )
+            conn.commit()
+
+
 def inserir_associado(
     login_id: int,
     cpf: str,
@@ -473,7 +513,7 @@ def init_db() -> None:
                 """
                 CREATE TABLE IF NOT EXISTS pagamento (
                     id SERIAL PRIMARY KEY,
-                    data_pagamento DATE NOT NULL,
+                    data_pagamento DATE,
                     valor_pagamento NUMERIC(10, 2),
                     status_pagamento_id INTEGER NOT NULL REFERENCES status_pagamento(id),
                     comprovante BYTEA
@@ -484,6 +524,11 @@ def init_db() -> None:
             # Garante coluna valor_pagamento em bancos já existentes
             cur.execute(
                 "ALTER TABLE pagamento ADD COLUMN IF NOT EXISTS valor_pagamento NUMERIC(10, 2)"
+            )
+            
+            # Remove constraint NOT NULL de data_pagamento em bancos já existentes
+            cur.execute(
+                "ALTER TABLE pagamento ALTER COLUMN data_pagamento DROP NOT NULL"
             )
 
             # Tabela de mensalidade
@@ -604,6 +649,7 @@ def listar_mensalidades(associado_id: int = None) -> List[Dict[str, Any]]:
                         sm.descricao as status_mensalidade,
                         m.pagamento_id,
                         p.data_pagamento,
+                        p.status_pagamento_id,
                         sp.descricao as status_pagamento
                     FROM mensalidade m
                     JOIN associado a ON m.associado_id = a.id
@@ -629,6 +675,7 @@ def listar_mensalidades(associado_id: int = None) -> List[Dict[str, Any]]:
                         sm.descricao as status_mensalidade,
                         m.pagamento_id,
                         p.data_pagamento,
+                        p.status_pagamento_id,
                         sp.descricao as status_pagamento
                     FROM mensalidade m
                     JOIN associado a ON m.associado_id = a.id
@@ -667,12 +714,11 @@ def inserir_pagamento(
             )
             pagamento_id = cur.fetchone()["id"]
             
-            # Vincula pagamento à mensalidade
+            # Vincula pagamento à mensalidade (sem alterar status)
             cur.execute(
                 """
                 UPDATE mensalidade
-                SET pagamento_id = %s,
-                    status_mensalidade_id = 3
+                SET pagamento_id = %s
                 WHERE id = %s
                 """,
                 (pagamento_id, mensalidade_id),
@@ -777,10 +823,8 @@ def atualizar_pagamento(
     comprovante_bytes: Optional[bytes] = None,
 ) -> None:
     """Atualiza um registro de pagamento e garante vínculo com a mensalidade.
-
-    Também ajusta o status da mensalidade conforme o status do pagamento:
-    - status_pagamento_id = 1 (Pago)   -> status_mensalidade_id = 3 (Pago)
-    - status_pagamento_id = 2 (Não Pago) -> status_mensalidade_id = 1 (Não Pago)
+    
+    Atualiza apenas a tabela de pagamento, sem alterar o status da mensalidade.
     """
 
     with get_connection() as conn:
@@ -798,17 +842,32 @@ def atualizar_pagamento(
                 (data_pagamento, valor_pagamento, status_pagamento_id, comprovante_bytes, pagamento_id),
             )
 
-            # Garante que a mensalidade aponte para este pagamento e ajusta status
-            novo_status_mensalidade = 3 if status_pagamento_id == 1 else 1
-
+            # Garante que a mensalidade aponte para este pagamento (sem alterar status)
             cur.execute(
                 """
                 UPDATE mensalidade
-                SET pagamento_id = COALESCE(pagamento_id, %s),
-                    status_mensalidade_id = %s
+                SET pagamento_id = COALESCE(pagamento_id, %s)
                 WHERE id = %s
                 """,
-                (pagamento_id, novo_status_mensalidade, mensalidade_id),
+                (pagamento_id, mensalidade_id),
             )
 
             conn.commit()
+
+
+def buscar_comprovante_pagamento(pagamento_id: int) -> Optional[bytes]:
+    """Busca o comprovante (bytes) de um pagamento específico."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT comprovante
+                FROM pagamento
+                WHERE id = %s
+                """,
+                (pagamento_id,),
+            )
+            resultado = cur.fetchone()
+            if resultado and resultado["comprovante"]:
+                return bytes(resultado["comprovante"])
+            return None

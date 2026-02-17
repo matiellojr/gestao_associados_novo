@@ -10,6 +10,7 @@ from db import (
     inserir_pagamento,
     atualizar_pagamento,
     atualizar_associado_completo,
+    buscar_comprovante_pagamento,
 )
 
 
@@ -106,8 +107,18 @@ def dialog_editar_mensalidade(row) -> None:
     from datetime import datetime
 
     st.markdown(
-        f"Associado: {row.get('nome_completo', '')} - Mensalidade Nº {row.get('id')}"
+        f"Associado: {row.get('nome_completo', '')}"
     )
+    
+    # Verificar se está tudo pago (Status Mensalidade = 3 "Pago" E Status Pagamento = 1 "Pago")
+    status_mensalidade_id = int(row.get("status_mensalidade_id") or 1)
+    status_pagamento_id = row.get("status_pagamento_id")
+    tudo_pago = (status_mensalidade_id == 3 and status_pagamento_id == 1)
+    
+    if tudo_pago:
+        st.success("✅ Mensalidade e Pagamento já foram concluídos. Campos em modo somente leitura.")
+    
+    is_admin_user = (st.session_state.get("username", "").lower() == "admin")
 
     aba_dados, aba_pagamento = st.tabs(["Dados da Mensalidade", "Pagamento"])
 
@@ -126,8 +137,6 @@ def dialog_editar_mensalidade(row) -> None:
             data_venc_valor = data_venc_valor.date()
         elif not isinstance(data_venc_valor, date):
             data_venc_valor = date.today()
-
-        is_admin_user = (st.session_state.get("username", "").lower() == "admin")
 
         with st.form("form_editar_mensalidade"):
             raw_valor = row.get("valor")
@@ -150,7 +159,7 @@ def dialog_editar_mensalidade(row) -> None:
                 format="%.2f",
                 value=valor_inicial,
                 key=f"edit_mens_valor_{row['id']}",
-                disabled=not is_admin_user,
+                disabled=True,
             )
 
             data_vencimento = st.date_input(
@@ -158,7 +167,7 @@ def dialog_editar_mensalidade(row) -> None:
                 value=data_venc_valor,
                 format="DD/MM/YYYY",
                 key=f"edit_mens_venc_{row['id']}",
-                disabled=not is_admin_user,
+                disabled=True,
             )
 
             status_mens_id_atual = int(row.get("status_mensalidade_id") or 1)
@@ -175,14 +184,22 @@ def dialog_editar_mensalidade(row) -> None:
                 index=status_mens_opcoes.index(status_mens_id_atual)
                 if status_mens_id_atual in status_mens_opcoes
                 else 0,
-                disabled=not is_admin_user,
+                disabled=True,
                 key=f"edit_mens_status_{row['id']}",
-                help="Status é atualizado automaticamente conforme o pagamento.",
+                help="Status da mensalidade (somente leitura)." if tudo_pago else "Status é atualizado automaticamente conforme o pagamento.",
             )
 
-            col1, col2 = st.columns(2)
-            salvar = col1.form_submit_button("Salvar", type="primary", use_container_width=True)
-            cancelar = col2.form_submit_button("Cancelar", use_container_width=True)
+            # Se tudo está pago, mostrar apenas botão "Fechar"
+            if tudo_pago:
+                cancelar = st.form_submit_button("Fechar", use_container_width=True)
+                salvar = False
+            elif is_admin_user:
+                col1, col2 = st.columns(2)
+                salvar = col1.form_submit_button("Salvar", type="primary", use_container_width=True)
+                cancelar = col2.form_submit_button("Cancelar", use_container_width=True)
+            else:
+                cancelar = st.form_submit_button("Fechar", use_container_width=True)
+                salvar = False
 
             if salvar:
                 try:
@@ -195,8 +212,10 @@ def dialog_editar_mensalidade(row) -> None:
                         data_vencimento=data_vencimento,
                     )
 
-                    st.session_state["msg_sucesso"] = f"Mensalidade #{row['id']} atualizada com sucesso."
+                    st.session_state["msg_sucesso"] = f"Mensalidade atualizada com sucesso."
                     st.session_state["grid_mens_counter"] = st.session_state.get("grid_mens_counter", 0) + 1
+                    st.session_state.pop("last_selected_mensalidade_id", None)
+                    st.session_state.pop("last_selected_mensalidade_admin_id", None)
                     if hasattr(st, "rerun"):
                         st.rerun()
                     else:
@@ -208,8 +227,11 @@ def dialog_editar_mensalidade(row) -> None:
                         st.error(str(e))
                 except Exception as e:  # noqa: BLE001
                     st.error(f"Erro ao atualizar mensalidade: {e}")
+            
             if cancelar:
                 st.session_state["grid_mens_counter"] = st.session_state.get("grid_mens_counter", 0) + 1
+                st.session_state.pop("last_selected_mensalidade_id", None)
+                st.session_state.pop("last_selected_mensalidade_admin_id", None)
                 if hasattr(st, "rerun"):
                     st.rerun()
                 else:
@@ -230,6 +252,8 @@ def dialog_editar_mensalidade(row) -> None:
                         excluir_mensalidade(int(row["id"]))
                         st.session_state["msg_sucesso"] = "Mensalidade excluída com sucesso."
                         st.session_state["grid_mens_counter"] = st.session_state.get("grid_mens_counter", 0) + 1
+                        st.session_state.pop("last_selected_mensalidade_id", None)
+                        st.session_state.pop("last_selected_mensalidade_admin_id", None)
                         if hasattr(st, "rerun"):
                             st.rerun()
                         else:
@@ -237,9 +261,33 @@ def dialog_editar_mensalidade(row) -> None:
                     except Exception as e:  # noqa: BLE001
                         st.error(f"Erro ao excluir mensalidade: {e}")
 
+
     # ---------------- Aba Pagamento -----------------
     with aba_pagamento:
         pagamento_id = row.get("pagamento_id")
+        
+        # Buscar comprovante existente
+        comprovante_existente = None
+        if pagamento_id:
+            try:
+                comprovante_existente = buscar_comprovante_pagamento(int(pagamento_id))
+            except Exception:
+                pass
+        
+        # Mostrar informação sobre comprovante existente
+        if comprovante_existente:
+            st.info("📎 Comprovante anexado")
+            col_comp1, col_comp2 = st.columns([2, 3])
+            with col_comp1:
+                st.download_button(
+                    label="⬇️ Baixar Comprovante",
+                    data=comprovante_existente,
+                    file_name=f"comprovante_pagamento_{pagamento_id}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            with col_comp2:
+                st.caption("Você pode fazer upload de um novo comprovante para substituir o atual.")
 
         data_pag_valor = row.get("data_pagamento")
         if isinstance(data_pag_valor, str):
@@ -257,13 +305,24 @@ def dialog_editar_mensalidade(row) -> None:
         else:
             data_pag_valor = date.today()
 
-        status_desc = (row.get("status_pagamento") or "").strip()
-        if status_desc.lower().startswith("pago"):
-            status_inicial_id = 1
-        elif status_desc:
-            status_inicial_id = 2
+        # Buscar status_pagamento_id diretamente do banco
+        status_inicial_id = row.get("status_pagamento_id")
+        if status_inicial_id is None or status_inicial_id == 2:
+            status_inicial_id = 2  # Não Pago
         else:
-            status_inicial_id = 2
+            status_inicial_id = 1  # Pago
+        
+        # Definir regras de desabilitação baseado em status e tipo de usuário
+        # Se tudo está pago (mensalidade E pagamento), desabilitar tudo
+        if tudo_pago:
+            desabilitar_valor_data = True
+            desabilitar_status = True
+        else:
+            esta_pago = (status_inicial_id == 1)
+            # Se está pago, desabilitar valor e data para todos
+            # Status só é desabilitado para não-admin quando está pago
+            desabilitar_valor_data = esta_pago
+            desabilitar_status = esta_pago and not is_admin_user
 
         with st.form(f"form_pag_mensalidade_{row['id']}"):
             raw_valor_mens = row.get("valor")
@@ -284,6 +343,7 @@ def dialog_editar_mensalidade(row) -> None:
                 format="%.2f",
                 value=valor_pag_inicial,
                 key=f"edit_pag_valor_{row['id']}",
+                disabled=desabilitar_valor_data,
             )
 
             data_pagamento = st.date_input(
@@ -291,29 +351,37 @@ def dialog_editar_mensalidade(row) -> None:
                 value=data_pag_valor,
                 format="DD/MM/YYYY",
                 key=f"edit_pag_data_{row['id']}",
+                disabled=desabilitar_valor_data,
             )
 
             status_pagamento_id = st.selectbox(
                 "Status do Pagamento",
                 [1, 2],
                 format_func=lambda x: "Pago" if x == 1 else "Não Pago",
-                index=0 if status_inicial_id == 2 else 1,
+                index=0 if status_inicial_id == 1 else 1,
                 key=f"edit_pag_status_{row['id']}",
-                disabled=not is_admin_user,
+                disabled=desabilitar_status,
             )
 
             comprovante_file = st.file_uploader(
-                "Anexar comprovante (opcional)",
+                "Anexar novo comprovante (opcional)" if comprovante_existente else "Anexar comprovante (opcional)",
                 key=f"edit_pag_comp_{row['id']}",
+                help="Envie um novo arquivo para substituir o comprovante atual" if comprovante_existente else None,
+                disabled=tudo_pago,
             )
 
-            colp1, colp2 = st.columns(2)
-            salvar_pag = colp1.form_submit_button(
-                "Salvar Pagamento", type="primary", use_container_width=True
-            )
-            cancelar_pag = colp2.form_submit_button(
-                "Cancelar", use_container_width=True
-            )
+            # Se tudo está pago, mostrar apenas botão "Fechar"
+            if tudo_pago:
+                cancelar_pag = st.form_submit_button("Fechar", use_container_width=True)
+                salvar_pag = False
+            else:
+                colp1, colp2 = st.columns(2)
+                salvar_pag = colp1.form_submit_button(
+                    "Salvar Pagamento", type="primary", use_container_width=True
+                )
+                cancelar_pag = colp2.form_submit_button(
+                    "Cancelar", use_container_width=True
+                )
 
             if salvar_pag:
                 try:
@@ -326,15 +394,20 @@ def dialog_editar_mensalidade(row) -> None:
                         )
                         st.session_state["mostrar_dialog_erro_pagamento"] = True
                         st.session_state["grid_mens_counter"] = st.session_state.get("grid_mens_counter", 0) + 1
+                        st.session_state.pop("last_selected_mensalidade_id", None)
+                        st.session_state.pop("last_selected_mensalidade_admin_id", None)
                         if hasattr(st, "rerun"):
                             st.rerun()
                         else:
                             st.experimental_rerun()
                         return
 
-                    comprovante_bytes = (
-                        comprovante_file.getvalue() if comprovante_file is not None else None
-                    )
+                    # Processar comprovante: usar novo upload ou manter existente
+                    if comprovante_file is not None:
+                        comprovante_bytes = comprovante_file.getvalue()
+                    else:
+                        # Se não há upload novo, manter o existente (se houver)
+                        comprovante_bytes = comprovante_existente
 
                     if pagamento_id:
                         atualizar_pagamento(
@@ -356,6 +429,8 @@ def dialog_editar_mensalidade(row) -> None:
 
                     st.session_state["msg_sucesso"] = f"Pagamento da mensalidade #{row['id']} salvo com sucesso."
                     st.session_state["grid_mens_counter"] = st.session_state.get("grid_mens_counter", 0) + 1
+                    st.session_state.pop("last_selected_mensalidade_id", None)
+                    st.session_state.pop("last_selected_mensalidade_admin_id", None)
                     if hasattr(st, "rerun"):
                         st.rerun()
                     else:
@@ -366,6 +441,8 @@ def dialog_editar_mensalidade(row) -> None:
                     st.error(f"Erro ao salvar pagamento: {e}")
             if cancelar_pag:
                 st.session_state["grid_mens_counter"] = st.session_state.get("grid_mens_counter", 0) + 1
+                st.session_state.pop("last_selected_mensalidade_id", None)
+                st.session_state.pop("last_selected_mensalidade_admin_id", None)
                 if hasattr(st, "rerun"):
                     st.rerun()
                 else:
@@ -593,6 +670,7 @@ def dialog_editar_associado(row) -> None:
                     st.session_state.pop("last_selected_row_id", None)
                     st.session_state["associado_dialog_active"] = False
                     st.session_state["grid_counter"] = st.session_state.get("grid_counter", 0) + 1
+                    st.session_state.pop("last_selected_associado_id", None)
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))
@@ -603,6 +681,7 @@ def dialog_editar_associado(row) -> None:
                 st.session_state.pop("last_selected_row_id", None)
                 st.session_state["associado_dialog_active"] = False
                 st.session_state["grid_counter"] = st.session_state.get("grid_counter", 0) + 1
+                st.session_state.pop("last_selected_associado_id", None)
                 st.rerun()
     
     with aba_admin:
@@ -755,6 +834,7 @@ def dialog_editar_associado(row) -> None:
                     st.session_state.pop("last_selected_row_id", None)
                     st.session_state["associado_dialog_active"] = False
                     st.session_state["grid_counter"] = st.session_state.get("grid_counter", 0) + 1
+                    st.session_state.pop("last_selected_associado_id", None)
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))
@@ -765,4 +845,5 @@ def dialog_editar_associado(row) -> None:
                 st.session_state.pop("last_selected_row_id", None)
                 st.session_state["associado_dialog_active"] = False
                 st.session_state["grid_counter"] = st.session_state.get("grid_counter", 0) + 1
+                st.session_state.pop("last_selected_associado_id", None)
                 st.rerun()
