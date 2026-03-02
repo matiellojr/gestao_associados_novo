@@ -427,7 +427,7 @@ def dialog_editar_mensalidade(row) -> None:
                             comprovante_bytes=comprovante_bytes,
                         )
 
-                    st.session_state["msg_sucesso"] = f"Pagamento da mensalidade salvo com sucesso."
+                    st.session_state["msg_sucesso"] = f"Pagamento da mensalidade #{row['id']} salvo com sucesso."
                     st.session_state["grid_mens_counter"] = st.session_state.get("grid_mens_counter", 0) + 1
                     st.session_state.pop("last_selected_mensalidade_id", None)
                     st.session_state.pop("last_selected_mensalidade_admin_id", None)
@@ -847,47 +847,3 @@ def dialog_editar_associado(row) -> None:
                 st.session_state["grid_counter"] = st.session_state.get("grid_counter", 0) + 1
                 st.session_state.pop("last_selected_associado_id", None)
                 st.rerun()
-
-
-"""
-    Diálogos relacionados a senha e autenticação
-"""
-@st.dialog("✅ Senha redefinida!")
-def dialog_senha_redefinida() -> None:
-    st.success("✅ Senha redefinida com sucesso! Faça login com sua nova senha.")
-
-    if st.button("Fechar"):
-        st.session_state["rec_cpf"] = ""
-        st.session_state.pop("rec_nova_senha", None)
-        st.session_state.pop("rec_conf_senha", None)
-        st.session_state.pop("senha_redefinida_sucesso", None)
-        # Mudar para a aba Login (índice 0)
-        st.session_state["aba_autenticacao"] = 0
-        if hasattr(st, "rerun"):
-            st.rerun()
-        else:
-            st.experimental_rerun()
-
-
-@st.dialog("🔓 Solicitação aprovada!")
-def dialog_solicitacao_aprovada() -> None:
-    st.info("Solicitação aprovada! Redefina sua senha abaixo.")
-
-@st.dialog("🔒 Solicitação enviada!")
-def dialog_solicitacao_troca_senha() -> None:
-    # Marcador usado pelo CSS para esconder o botão X apenas neste diálogo
-    st.markdown("<div id='dialog_solicitacao_troca_senha_marker'></div>", unsafe_allow_html=True)
-    st.success("Solicitação registrada! Aguarde a aprovação do administrador para redefinir sua senha.")
-
-    if st.button("Fechar"):
-        st.session_state["rec_cpf"] = ""
-        st.session_state.pop("rec_nova_senha", None)
-        st.session_state.pop("rec_conf_senha", None)
-        st.session_state.pop("senha_redefinida_sucesso", None)
-        # Mudar para a aba Login (índice 0)
-        st.session_state["aba_autenticacao"] = 0
-        if hasattr(st, "rerun"):
-            st.rerun()
-        else:
-            st.experimental_rerun()
-
