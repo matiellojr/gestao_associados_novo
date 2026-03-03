@@ -4,6 +4,7 @@ import re
 from datetime import date
 import streamlit as st
 import streamlit_authenticator as stauth
+import os
 
 from db import (
     carregar_credenciais,
@@ -14,10 +15,83 @@ from db import (
     atualizar_senha_usuario,
     verificar_usuario_existe,
 )
+from db import (
+    obter_login_por_email,
+    inserir_token_redefinicao,
+    obter_token_ativo,
+    consumir_token,
+)
 from area_associado import area_associado
 from area_admin import area_admin
 from dialogs import dialog_cadastro_sucesso, dialog_usuario_ja_existe
 from helpers import esconder_botao_fechar_dialog
+from helpers import enviar_email_codigo
+
+
+# --- Developer hidden panel (access via ?dev=TOKEN) ---------------------------------
+def _maybe_render_dev_panel():
+    """Renderiza painel de desenvolvedor se query param ?dev=TOKEN corresponder a DEV_KEY."""
+    try:
+        params = st.experimental_get_query_params()
+    except Exception:
+        return
+
+    dev_key = os.getenv("DEV_KEY") or (st.secrets.get("DEV_KEY") if hasattr(st, "secrets") else None)
+    if not dev_key:
+        return
+
+    dev_param = params.get("dev", [None])[0]
+    if dev_param != dev_key:
+        return
+
+    # Require authenticated developer user
+    auth_status = st.session_state.get("authentication_status")
+    username = st.session_state.get("username")
+    if not auth_status or (username or "").lower() != "developer":
+        return
+
+    # Dev panel shown
+    st.sidebar.markdown("**Developer mode**")
+    with st.sidebar.expander("Dev settings", expanded=True):
+        smtp_host = st.text_input("SMTP_HOST", value=os.getenv("SMTP_HOST", ""), key="dev_smtp_host")
+        smtp_port = st.text_input("SMTP_PORT", value=os.getenv("SMTP_PORT", "587"), key="dev_smtp_port")
+        smtp_user = st.text_input("SMTP_USER", value=os.getenv("SMTP_USER", ""), key="dev_smtp_user")
+        smtp_password = st.text_input("SMTP_PASSWORD", value=os.getenv("SMTP_PASSWORD", ""), key="dev_smtp_password")
+        email_from = st.text_input("EMAIL_FROM", value=os.getenv("EMAIL_FROM", ""), key="dev_email_from")
+
+        if st.button("Apply to session", key="dev_apply"):
+            os.environ["SMTP_HOST"] = smtp_host
+            os.environ["SMTP_PORT"] = smtp_port
+            os.environ["SMTP_USER"] = smtp_user
+            os.environ["SMTP_PASSWORD"] = smtp_password
+            os.environ["EMAIL_FROM"] = email_from
+            st.success("Credenciais aplicadas à sessão (variáveis de ambiente do processo).")
+
+        if st.button("Test SMTP connection", key="dev_test_smtp"):
+            try:
+                import smtplib
+                server = smtplib.SMTP(smtp_host, int(smtp_port), timeout=10)
+                server.starttls()
+                server.login(smtp_user, smtp_password)
+                server.quit()
+                st.success("Conexão SMTP OK")
+            except Exception as e:
+                st.error(f"Erro conexão SMTP: {e}")
+
+        # DB test
+        if st.button("Test DB connection", key="dev_test_db"):
+            try:
+                from db import get_connection
+                with get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1")
+                        _ = cur.fetchone()
+                st.success("Conexão com o banco OK")
+            except Exception as e:
+                st.error(f"Erro conexão DB: {e}")
+
+# Note: _maybe_render_dev_panel() will be called from `main()` after authentication
+# -------------------------------------------------------------------------------------
 
 
 def main():
@@ -33,6 +107,16 @@ def main():
         st.error(f"Erro ao inicializar o banco de dados: {e}")
         return
 
+    # Cria usuário 'developer' automaticamente se DEV_USER_PASSWORD estiver definido
+    dev_pwd = os.getenv("DEV_USER_PASSWORD") or os.getenv("DEV_PASSWORD")
+    try:
+        if dev_pwd and obter_login_id("developer") is None:
+            senha_hash = stauth.Hasher.hash_list([dev_pwd])[0]
+            inserir_usuario("developer", "Developer", senha_hash)
+    except Exception:
+        # ignora erro de criação (p.ex. já existe)
+        pass
+
     # Prepara autenticador
     credentials = carregar_credenciais()
     authenticator = stauth.Authenticate(
@@ -45,6 +129,9 @@ def main():
     name = st.session_state.get("name")
     authentication_status = st.session_state.get("authentication_status")
     username = st.session_state.get("username")
+
+    # Mostrar painel de desenvolvedor se aplicável (requer login como 'developer')
+    _maybe_render_dev_panel()
 
     # Se já autenticado, redireciona para área adequada
     if authentication_status:
@@ -205,18 +292,47 @@ def _render_cadastro_tab():
 
 
 def _render_esqueceu_senha_tab():
-    """Renderiza a aba de recuperação de senha."""
-    st.markdown("### Redefinir senha")
-    st.info("Digite seu CPF e escolha uma nova senha.")
-    
-    cpf_recuperacao = st.text_input("CPF", help="Digite apenas números", key="rec_cpf")
+    """Renderiza a aba de recuperação de senha por e-mail com código de 8 dígitos."""
+    st.markdown("### Redefinir senha por e‑mail")
+    st.info("Digite o e‑mail cadastrado para receber um código de autenticação de 8 dígitos.")
+
+    email = st.text_input("E-mail", key="rec_email")
+    enviar_codigo = st.button("Enviar código", key="btn_enviar_codigo")
+
+    if enviar_codigo:
+        if not email:
+            st.error("Informe o e‑mail cadastrado.")
+        else:
+            try:
+                dados = obter_login_por_email(email)
+                if not dados:
+                    st.error("E‑mail não encontrado no sistema.")
+                else:
+                    login_id = dados["id"]
+                    username = dados["username"]
+                    nome = dados.get("nome") or username
+                    token_info = inserir_token_redefinicao(login_id)
+                    
+                    codigo = token_info["token"]
+                    # Envia e‑mail com o código (pode lançar exceção se SMTP não configurado)
+                    enviar_email_codigo(email, nome, codigo)
+                    st.success("Código enviado! Verifique sua caixa de entrada (e spam). O código expira em 15 minutos.")
+                    # Guarda em session_state para a etapa de validação
+                    st.session_state["rec_login_id"] = login_id
+                    st.session_state["rec_username"] = username
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Erro ao enviar código: {e}")
+
+    # Etapa de verificação do código e troca de senha
+    st.markdown("---")
+    st.markdown("#### Validar código e redefinir senha")
+    codigo_input = st.text_input("Código de autenticação (8 dígitos)", key="rec_codigo")
     nova_senha_rec = st.text_input("Nova senha", type="password", key="rec_nova_senha")
     confirma_senha_rec = st.text_input("Confirmar nova senha", type="password", key="rec_conf_senha")
-    
-    submitted_rec = st.button("Redefinir senha", key="btn_redefinir")
-    
+    submitted_rec = st.button("Confirmar e redefinir", key="btn_confirmar_codigo")
+
     if submitted_rec:
-        if not cpf_recuperacao or not nova_senha_rec or not confirma_senha_rec:
+        if not codigo_input or not nova_senha_rec or not confirma_senha_rec:
             st.error("Preencha todos os campos.")
         elif nova_senha_rec != confirma_senha_rec:
             st.error("As senhas não conferem.")
@@ -224,21 +340,25 @@ def _render_esqueceu_senha_tab():
             st.error("A senha deve ter no mínimo 4 caracteres.")
         else:
             try:
-                cpf_digits = re.sub(r"\D", "", cpf_recuperacao or "")
-                if len(cpf_digits) != 11:
-                    raise ValueError("CPF deve conter 11 dígitos.")
-                
-                # Verifica se o usuário existe
-                if not verificar_usuario_existe(cpf_digits):
-                    st.error("CPF não encontrado no sistema.")
-                else:
-                    # Atualiza a senha
-                    senha_hash = stauth.Hasher.hash_list([nova_senha_rec])[0]
-                    atualizar_senha_usuario(cpf_digits, senha_hash)
-                    st.success("✅ Senha redefinida com sucesso! Faça login com sua nova senha.")
-                    
-            except ValueError as e:
-                st.error(str(e))
+                login_id = st.session_state.get("rec_login_id")
+                username = st.session_state.get("rec_username")
+                if not login_id or not username:
+                    st.error("Primeiro solicite o código pelo e‑mail cadastrado.")
+                    return
+
+                token_row = obter_token_ativo(login_id, codigo_input)
+                if not token_row:
+                    st.error("Código inválido, expirado ou já utilizado.")
+                    return
+
+                # Atualiza a senha do usuário
+                senha_hash = stauth.Hasher.hash_list([nova_senha_rec])[0]
+                atualizar_senha_usuario(username, senha_hash)
+                consumir_token(login_id, codigo_input)
+                st.success("✅ Senha redefinida com sucesso! Faça login com sua nova senha.")
+                # Limpa state relacionado
+                for k in ("rec_login_id", "rec_username", "rec_email", "rec_codigo"):
+                    st.session_state.pop(k, None)
             except Exception as e:  # noqa: BLE001
                 st.error(f"Erro ao redefinir senha: {e}")
 

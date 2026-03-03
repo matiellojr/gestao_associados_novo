@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2 import sql
+import random
+from datetime import datetime, timedelta, timezone
 
 
 def get_connection():
@@ -35,7 +37,7 @@ def get_connection():
 
 
 def carregar_credenciais() -> Dict[str, Dict[str, Dict[str, str]]]:
-    """Carrega usuários ativos da tabela login e monta o dict de credenciais
+    """Carrega usuários ativos da tabela `login` e monta o dict de credenciais
     esperado pelo streamlit-authenticator.
     Estrutura retornada:
     {
@@ -45,9 +47,7 @@ def carregar_credenciais() -> Dict[str, Dict[str, Dict[str, str]]]:
         }
     }
     """
-
-    credentials = {"usernames": {}}
-
+    credentials: Dict[str, Dict[str, Dict[str, str]]] = {"usernames": {}}
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -57,50 +57,100 @@ def carregar_credenciais() -> Dict[str, Dict[str, Dict[str, str]]]:
                 username = row["username"]
                 nome = row["nome"]
                 senha_hash = row["senha_hash"]
-                base_entry = {
-                    "name": nome,
-                    "password": senha_hash,
-                }
-
-                # Username exatamente como está no banco (sem máscara)
+                base_entry = {"name": nome, "password": senha_hash}
                 credentials["usernames"][username] = base_entry
-
-                # Se for um CPF com 11 dígitos, também aceita o formato 000.000.000-00
                 if re.fullmatch(r"\d{11}", username):
                     cpf_formatado = (
                         f"{username[:3]}.{username[3:6]}.{username[6:9]}-"
                         f"{username[9:]}"
                     )
-                    # Não sobrescreve se por acaso já existir uma entrada com máscara
                     credentials["usernames"].setdefault(cpf_formatado, base_entry)
-
     return credentials
 
 
 def inserir_usuario(username: str, nome: str, senha_hash: str) -> None:
-    """Insere um novo usuário na tabela login.
-
-    Não faz hash da senha: recebe o hash pronto.
-    """
-
+    """Insere um novo usuário na tabela `login`. Recebe senha já hasheada."""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            # Verifica se já existe usuário com esse username
-            cur.execute(
-                "SELECT 1 FROM login WHERE username = %s",
-                (username,),
-            )
+            cur.execute("SELECT 1 FROM login WHERE username = %s", (username,))
             if cur.fetchone():
                 raise ValueError("Usuário já existe")
-
             cur.execute(
-                """
-                INSERT INTO login (username, nome, senha_hash, ativo)
-                VALUES (%s, %s, %s, TRUE)
-                """,
+                "INSERT INTO login (username, nome, senha_hash, ativo) VALUES (%s, %s, %s, TRUE)",
                 (username, nome, senha_hash),
             )
             conn.commit()
+
+
+def obter_username_por_email(email: str) -> Optional[str]:
+    """Retorna o username (login.username) associado ao e-mail informado.
+
+    Procura na tabela `associado` pelo campo `email` e devolve o username
+    correspondente da tabela `login`, ou `None` se não existir.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT l.username FROM associado a JOIN login l ON a.login_id = l.id WHERE a.email = %s",
+                (email,),
+            )
+            row = cur.fetchone()
+            return row["username"] if row else None
+
+
+def obter_login_por_email(email: str) -> Optional[dict]:
+    """Retorna dicionário com `id`, `username` e `nome` dado o e-mail do associado, ou None."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT l.id, l.username, l.nome FROM associado a JOIN login l ON a.login_id = l.id WHERE a.email = %s",
+                (email,),
+            )
+            row = cur.fetchone()
+            return row if row else None
+
+
+def inserir_token_redefinicao(login_id: int, codigo: str = None) -> dict:
+    """Insere um token de redefinição para o `login_id` e retorna dict com token e expiração."""
+    if codigo is None:
+        codigo = str(random.randint(10**7, 10**8 - 1))  # 8 dígitos
+    agora = datetime.now(timezone.utc)
+    expira = agora + timedelta(minutes=15)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO password_reset_tokens (login_id, token, expira_em) VALUES (%s, %s, %s) RETURNING id",
+                (login_id, codigo, expira),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return {"id": row["id"], "token": codigo, "expira_em": expira}
+
+
+def obter_token_ativo(login_id: int, token: str) -> Optional[dict]:
+    """Retorna a linha do token se existir, não usado e não expirado."""
+    agora = datetime.now(timezone.utc)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, login_id, token, usado, criado_em, expira_em FROM password_reset_tokens WHERE login_id = %s AND token = %s AND usado = FALSE AND expira_em > %s",
+                (login_id, token, agora),
+            )
+            row = cur.fetchone()
+            return row if row else None
+
+
+def consumir_token(login_id: int, token: str) -> None:
+    """Marca o token como usado (used=true) e registra `usado_em`."""
+    agora = datetime.now(timezone.utc)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE password_reset_tokens SET usado = TRUE, usado_em = %s WHERE login_id = %s AND token = %s",
+                (agora, login_id, token),
+            )
+            conn.commit()
+    
 
 
 def obter_login_id(username: str) -> Optional[int]:
@@ -218,7 +268,7 @@ def inserir_associado(
                     identidade,
                 ),
             )
-            conn.commit()
+    
 
 
 def obter_associado_por_login_id(login_id: int) -> Optional[Dict[str, Any]]:
@@ -542,6 +592,21 @@ def init_db() -> None:
                     data_vencimento DATE NOT NULL,
                     status_mensalidade_id INTEGER NOT NULL REFERENCES status_mensalidade(id),
                     pagamento_id INTEGER REFERENCES pagamento(id)
+                )
+                """
+            )
+
+            # Tabela para tokens de redefinição de senha (código de 8 dígitos)
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    id SERIAL PRIMARY KEY,
+                    login_id INTEGER NOT NULL REFERENCES login(id) ON DELETE CASCADE,
+                    token VARCHAR(16) NOT NULL,
+                    usado BOOLEAN NOT NULL DEFAULT FALSE,
+                    criado_em TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expira_em TIMESTAMP WITH TIME ZONE NOT NULL,
+                    usado_em TIMESTAMP WITH TIME ZONE NULL
                 )
                 """
             )
