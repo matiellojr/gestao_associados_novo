@@ -32,9 +32,13 @@ def area_admin(authenticator) -> None:
     with st.sidebar:
         st.header("Área do administrador")
         st.markdown(f"Admin: {name} ({username})")
+        # menu dinâmico: adiciona Developer apenas para admin/developer
+        menu_items = ["Associados", "Mensalidades"]
+        if (username or "").lower() in ("admin", "developer"):
+            menu_items.append("Developer")
         menu = st.radio(
             "Menu",
-            ["Associados", "Mensalidades"],
+            menu_items,
             key="admin_menu",
         )
         authenticator.logout("Sair", "sidebar")
@@ -63,6 +67,10 @@ def area_admin(authenticator) -> None:
 
     if menu == "Mensalidades":
         _render_mensalidades_section()
+        return
+
+    if menu == "Developer":
+        _render_developer_section()
         return
 
     _render_associados_section()
@@ -455,7 +463,7 @@ def _render_associados_section():
         "id", "cidade", "estado_uf", "telefone", "login_id", "data_nascimento",
         "email", "endereco", "situacao_trabalho", "tipo_sanguineo",
         "quantidade_filhos", "identidade", "data_inicio", "data_desligamento",
-        "motivo_desligamento", "situacao_associado", "tipo_associado", "ciclo_cobranca"
+        "motivo_desligamento", "situacao_associado", "tipo_associado", "ciclo_cobranca",
     ]:
         gb.configure_column(col, hide=True)
 
@@ -508,12 +516,72 @@ def _render_associados_section():
     if selected_rows is not None and len(selected_rows) > 0:
         row_id = selected_rows.iloc[0].get("id")
         last_selected_id = st.session_state.get("last_selected_associado_id")
-        
+
         # Só abre diálogo se for uma nova seleção diferente
         if row_id != last_selected_id:
             st.session_state["last_selected_associado_id"] = row_id
-            row = selected_rows.iloc[0].to_dict()
-            dialog_editar_associado(row)
+            # Recupera o registro original da lista 'associados' para preservar 'foto' (bytes)
+            original = None
+            try:
+                for a in associados:
+                    if int(a.get("id")) == int(row_id):
+                        original = a
+                        break
+            except Exception:
+                original = None
+
+            if original is not None:
+                dialog_editar_associado(original)
+            else:
+                # Fallback: usa os dados da grid se não encontrar o original
+                row = selected_rows.iloc[0].to_dict()
+                dialog_editar_associado(row)
     else:
         # Limpa o ID quando não há seleção
         st.session_state.pop("last_selected_associado_id", None)
+
+
+def _render_developer_section():
+    """Página de desenvolvedor (somente visível para admin/developer)."""
+    import os
+
+    st.subheader("Developer / Test Panel")
+    st.markdown("Use este painel apenas para testes locais. Não exponha credenciais em repositórios.")
+
+    smtp_host = st.text_input("SMTP_HOST", value=os.getenv("SMTP_HOST", ""), key="dev_smtp_host_page")
+    smtp_port = st.text_input("SMTP_PORT", value=os.getenv("SMTP_PORT", "587"), key="dev_smtp_port_page")
+    smtp_user = st.text_input("SMTP_USER", value=os.getenv("SMTP_USER", ""), key="dev_smtp_user_page")
+    smtp_password = st.text_input("SMTP_PASSWORD", value=os.getenv("SMTP_PASSWORD", ""), type="password", key="dev_smtp_password_page")
+    email_from = st.text_input("EMAIL_FROM", value=os.getenv("EMAIL_FROM", ""), key="dev_email_from_page")
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("Apply to session", key="dev_apply_page"):
+            os.environ["SMTP_HOST"] = smtp_host
+            os.environ["SMTP_PORT"] = smtp_port
+            os.environ["SMTP_USER"] = smtp_user
+            os.environ["SMTP_PASSWORD"] = smtp_password
+            os.environ["EMAIL_FROM"] = email_from
+            st.success("Credenciais aplicadas à sessão (variáveis de ambiente do processo).")
+    with col2:
+        if st.button("Test SMTP connection", key="dev_test_smtp_page"):
+            try:
+                import smtplib
+                s = smtplib.SMTP(smtp_host, int(smtp_port), timeout=10)
+                s.starttls()
+                s.login(smtp_user, smtp_password)
+                s.quit()
+                st.success("Conexão SMTP OK")
+            except Exception as e:
+                st.error(f"Erro conexão SMTP: {e}")
+
+    if st.button("Test DB connection", key="dev_test_db_page"):
+        try:
+            from db import get_connection
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    _ = cur.fetchone()
+            st.success("Conexão com o banco OK")
+        except Exception as e:
+            st.error(f"Erro conexão DB: {e}")

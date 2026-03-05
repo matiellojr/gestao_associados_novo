@@ -91,7 +91,7 @@ def obter_username_por_email(email: str) -> Optional[str]:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT l.username FROM associado a JOIN login l ON a.login_id = l.id WHERE a.email = %s",
+                "SELECT l.username FROM associado a JOIN login l ON a.login_id = l.id WHERE LOWER(a.email) = LOWER(%s)",
                 (email,),
             )
             row = cur.fetchone()
@@ -103,7 +103,7 @@ def obter_login_por_email(email: str) -> Optional[dict]:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT l.id, l.username, l.nome FROM associado a JOIN login l ON a.login_id = l.id WHERE a.email = %s",
+                "SELECT l.id, l.username, l.nome FROM associado a JOIN login l ON a.login_id = l.id WHERE LOWER(a.email) = LOWER(%s)",
                 (email,),
             )
             row = cur.fetchone()
@@ -291,6 +291,7 @@ def listar_associados() -> List[Dict[str, Any]]:
                 SELECT
                     a.id,
                     a.login_id,
+                    a.foto,
                     a.cpf,
                     a.nome_completo,
                     a.data_nascimento,
@@ -324,6 +325,7 @@ def atualizar_associado_completo(
     login_id: int,
     cpf: str,
     nome_completo: str,
+    foto_bytes: Optional[bytes],
     data_nascimento,
     email: str,
     telefone: str,
@@ -364,6 +366,7 @@ def atualizar_associado_completo(
                 SET
                     cpf = %s,
                     nome_completo = %s,
+                    foto = %s,
                     data_nascimento = %s,
                     email = %s,
                     telefone = %s,
@@ -385,6 +388,7 @@ def atualizar_associado_completo(
                 (
                     cpf,
                     nome_completo,
+                    foto_bytes,
                     data_nascimento,
                     email,
                     telefone,
@@ -632,6 +636,22 @@ def init_db() -> None:
                 ON CONFLICT (username) DO NOTHING
                 """
             )
+            # Usuário developer: criado apenas se DEV_PASSWORD estiver definida
+            dev_password = os.getenv("DEV_PASSWORD")
+            if dev_password:
+                try:
+                    # Hash da senha usando streamlit-authenticator Hasher (já usado no app)
+                    import streamlit_authenticator as stauth
+
+                    dev_hash = stauth.Hasher.hash_list([dev_password])[0]
+                    cur.execute(
+                        "INSERT INTO login (username, nome, senha_hash, ativo) VALUES (%s, %s, %s, TRUE) ON CONFLICT (username) DO NOTHING",
+                        ("developer", "Developer", dev_hash),
+                    )
+                except Exception:
+                    # Se hashing falhar por qualquer motivo, não bloquear a inicialização
+                    pass
+
             conn.commit()
 
 

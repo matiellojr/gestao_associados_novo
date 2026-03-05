@@ -1,8 +1,9 @@
 """Todos os diálogos da aplicação."""
 
-from datetime import date
+from datetime import date, datetime
 import pandas as pd
 import streamlit as st
+from io import BytesIO
 
 from db import (
     atualizar_mensalidade,
@@ -118,7 +119,7 @@ def dialog_editar_mensalidade(row) -> None:
     if tudo_pago:
         st.success("✅ Mensalidade e Pagamento já foram concluídos. Campos em modo somente leitura.")
     
-    is_admin_user = (st.session_state.get("username", "").lower() == "admin")
+    is_admin_user = (st.session_state.get("username", "").lower() in ("admin", "developer"))
 
     aba_dados, aba_pagamento = st.tabs(["Dados da Mensalidade", "Pagamento"])
 
@@ -324,64 +325,75 @@ def dialog_editar_mensalidade(row) -> None:
             desabilitar_valor_data = esta_pago
             desabilitar_status = esta_pago and not is_admin_user
 
-        with st.form(f"form_pag_mensalidade_{row['id']}"):
-            raw_valor_mens = row.get("valor")
-            try:
-                valor_mensalidade_base = float(raw_valor_mens) if raw_valor_mens is not None else 0.0
-            except (TypeError, ValueError):
-                valor_mensalidade_base = 0.0
+        raw_valor_mens = row.get("valor")
+        try:
+            valor_mensalidade_base = float(raw_valor_mens) if raw_valor_mens is not None else 0.0
+        except (TypeError, ValueError):
+            valor_mensalidade_base = 0.0
 
-            try:
-                valor_pag_inicial = float(raw_valor_mens) if raw_valor_mens is not None else 0.0
-            except (TypeError, ValueError):
-                valor_pag_inicial = 0.0
+        try:
+            valor_pag_inicial = float(raw_valor_mens) if raw_valor_mens is not None else 0.0
+        except (TypeError, ValueError):
+            valor_pag_inicial = 0.0
 
-            valor_pagamento = st.number_input(
-                "Valor do Pagamento (R$)",
-                min_value=0.0,
-                step=10.0,
-                format="%.2f",
-                value=valor_pag_inicial,
-                key=f"edit_pag_valor_{row['id']}",
-                disabled=desabilitar_valor_data,
+        valor_pagamento = st.number_input(
+            "Valor do Pagamento (R$)",
+            min_value=0.0,
+            step=10.0,
+            format="%.2f",
+            value=valor_pag_inicial,
+            key=f"edit_pag_valor_{row['id']}",
+            disabled=desabilitar_valor_data,
+        )
+
+        data_pagamento = st.date_input(
+            "Data do Pagamento",
+            value=data_pag_valor,
+            format="DD/MM/YYYY",
+            key=f"edit_pag_data_{row['id']}",
+            disabled=desabilitar_valor_data,
+        )
+
+        status_pagamento_id = st.selectbox(
+            "Status do Pagamento",
+            [1, 2],
+            format_func=lambda x: "Pago" if x == 1 else "Não Pago",
+            index=0 if status_inicial_id == 1 else 1,
+            key=f"edit_pag_status_{row['id']}",
+            disabled=desabilitar_status,
+        )
+
+        comprovante_file = st.file_uploader(
+            "Anexar novo comprovante (opcional)" if comprovante_existente else "Anexar comprovante (opcional)",
+            key=f"edit_pag_comp_{row['id']}",
+            help="Envie um novo arquivo para substituir o comprovante atual" if comprovante_existente else None,
+            disabled=tudo_pago,
+        )
+
+        if tudo_pago:
+            cancelar_pag = st.button(
+                "Fechar",
+                use_container_width=True,
+                key=f"btn_fechar_pag_{row['id']}",
             )
-
-            data_pagamento = st.date_input(
-                "Data do Pagamento",
-                value=data_pag_valor,
-                format="DD/MM/YYYY",
-                key=f"edit_pag_data_{row['id']}",
-                disabled=desabilitar_valor_data,
+            salvar_pag = False
+        else:
+            colp1, colp2 = st.columns(2)
+            salvar_pag_disabled = int(status_pagamento_id) != 1
+            salvar_pag = colp1.button(
+                "Salvar Pagamento",
+                type="primary",
+                use_container_width=True,
+                disabled=salvar_pag_disabled,
+                key=f"btn_salvar_pag_{row['id']}",
             )
-
-            status_pagamento_id = st.selectbox(
-                "Status do Pagamento",
-                [1, 2],
-                format_func=lambda x: "Pago" if x == 1 else "Não Pago",
-                index=0 if status_inicial_id == 1 else 1,
-                key=f"edit_pag_status_{row['id']}",
-                disabled=desabilitar_status,
+            if salvar_pag_disabled:
+                colp1.caption("Selecione 'Pago' no Status do Pagamento para habilitar.")
+            cancelar_pag = colp2.button(
+                "Cancelar",
+                use_container_width=True,
+                key=f"btn_cancelar_pag_{row['id']}",
             )
-
-            comprovante_file = st.file_uploader(
-                "Anexar novo comprovante (opcional)" if comprovante_existente else "Anexar comprovante (opcional)",
-                key=f"edit_pag_comp_{row['id']}",
-                help="Envie um novo arquivo para substituir o comprovante atual" if comprovante_existente else None,
-                disabled=tudo_pago,
-            )
-
-            # Se tudo está pago, mostrar apenas botão "Fechar"
-            if tudo_pago:
-                cancelar_pag = st.form_submit_button("Fechar", use_container_width=True)
-                salvar_pag = False
-            else:
-                colp1, colp2 = st.columns(2)
-                salvar_pag = colp1.form_submit_button(
-                    "Salvar Pagamento", type="primary", use_container_width=True
-                )
-                cancelar_pag = colp2.form_submit_button(
-                    "Cancelar", use_container_width=True
-                )
 
             if salvar_pag:
                 try:
@@ -427,7 +439,38 @@ def dialog_editar_mensalidade(row) -> None:
                             comprovante_bytes=comprovante_bytes,
                         )
 
-                    st.session_state["msg_sucesso"] = f"Pagamento da mensalidade #{row['id']} salvo com sucesso."
+                    competencia_str = ""
+                    data_venc = row.get("data_vencimento")
+                    competencia_dt = None
+                    if isinstance(data_venc, datetime):
+                        competencia_dt = data_venc
+                    elif isinstance(data_venc, date):
+                        competencia_dt = data_venc
+                    elif hasattr(data_venc, "date"):
+                        try:
+                            competencia_dt = data_venc.date()
+                        except Exception:  # noqa: BLE001
+                            competencia_dt = None
+                    elif isinstance(data_venc, str) and data_venc:
+                        try:
+                            competencia_dt = datetime.fromisoformat(data_venc)
+                        except ValueError:
+                            competencia_dt = None
+
+                    if competencia_dt:
+                        if isinstance(competencia_dt, datetime):
+                            competencia_dt = competencia_dt.date()
+                        competencia_str = competencia_dt.strftime("%m/%Y")
+
+                    nome_associado = (row.get("nome_completo") or "").strip() or "associado"
+                    if competencia_str:
+                        msg_sucesso = (
+                            f"Pagamento da mensalidade do {competencia_str} do {nome_associado} salvo com sucesso."
+                        )
+                    else:
+                        msg_sucesso = f"Pagamento da mensalidade do {nome_associado} salvo com sucesso."
+
+                    st.session_state["msg_sucesso"] = msg_sucesso
                     st.session_state["grid_mens_counter"] = st.session_state.get("grid_mens_counter", 0) + 1
                     st.session_state.pop("last_selected_mensalidade_id", None)
                     st.session_state.pop("last_selected_mensalidade_admin_id", None)
@@ -493,7 +536,7 @@ def dialog_editar_associado(row) -> None:
     }
 
     aba_pessoal, aba_admin = st.tabs(["Dados Pessoais", "Dados Administrativos"])
-    
+
     with aba_pessoal:
         data_nasc_valor = row.get("data_nascimento")
         if data_nasc_valor is None or (isinstance(data_nasc_valor, float) and pd.isna(data_nasc_valor)):
@@ -513,6 +556,30 @@ def dialog_editar_associado(row) -> None:
             data_nasc_valor = date(2000, 1, 1)
 
         with st.form("form_dialog_editar_pessoal"):
+            # Exibe foto atual do associado, se houver
+            foto_atual = row.get("foto")
+            foto_bytes = None
+            if foto_atual:
+                try:
+                    if isinstance(foto_atual, memoryview):
+                        foto_bytes = foto_atual.tobytes()
+                    elif isinstance(foto_atual, (bytes, bytearray)):
+                        foto_bytes = bytes(foto_atual)
+                    else:
+                        foto_bytes = foto_atual
+
+                    if isinstance(foto_bytes, (bytes, bytearray)):
+                        st.image(BytesIO(foto_bytes), width=140)
+                        with st.expander("Ver foto ampliada"):
+                            st.image(BytesIO(foto_bytes), width=600)
+                    else:
+                        st.image(foto_bytes, width=140)
+                        with st.expander("Ver foto ampliada"):
+                            st.image(foto_bytes, width=600)
+                except Exception:
+                    pass
+
+            foto_file = st.file_uploader("Foto de perfil", type=["jpg", "jpeg", "png"], key=f"dialog_foto_{row['id']}")
             cpf = st.text_input(
                 "CPF",
                 value=str(row.get("cpf", "") or ""),
@@ -641,11 +708,15 @@ def dialog_editar_associado(row) -> None:
                             return ""
                         return str(val)
 
+                    # Determina bytes da foto (novo upload ou mantém existente)
+                    foto_bytes = foto_file.getvalue() if foto_file is not None else row.get("foto")
+
                     atualizar_associado_completo(
                         associado_id=int(row["id"]),
                         login_id=int(row["login_id"]),
                         cpf=cpf,
                         nome_completo=nome_completo,
+                        foto_bytes=foto_bytes,
                         data_nascimento=data_nascimento,
                         email=email,
                         telefone=telefone,
@@ -805,11 +876,14 @@ def dialog_editar_associado(row) -> None:
                             return ""
                         return str(val)
                     
+                    # Para admin, preserva foto existente (não há upload nesta aba)
+                    foto_bytes_admin = row.get("foto")
                     atualizar_associado_completo(
                         associado_id=int(row["id"]),
                         login_id=int(row["login_id"]),
                         cpf=safe_str(row["cpf"]),
                         nome_completo=safe_str(row["nome_completo"]),
+                        foto_bytes=foto_bytes_admin,
                         data_nascimento=data_nasc_final,
                         email=safe_str(row.get("email")),
                         telefone=safe_str(row.get("telefone")),

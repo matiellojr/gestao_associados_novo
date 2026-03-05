@@ -4,6 +4,9 @@ import pandas as pd
 import streamlit as st
 from datetime import date, datetime
 from decimal import Decimal
+import os
+import smtplib
+from email.message import EmailMessage
 
 
 def esconder_botao_fechar_dialog() -> None:
@@ -111,6 +114,55 @@ def date_to_str(v):
             return str(v)
     
     return str(v)
+
+
+def enviar_email_codigo(destinatario: str, nome: str, codigo: str) -> None:
+    """Envia o código de redefinição para o e-mail informado.
+
+    Configurar via variáveis de ambiente:
+    - SMTP_HOST
+    - SMTP_PORT
+    - SMTP_USER
+    - SMTP_PASSWORD
+    - EMAIL_FROM (opcional)
+    Se as variáveis não estiverem configuradas, a função irá levantar exceção.
+    """
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    email_from = os.getenv("EMAIL_FROM", smtp_user)
+
+    if not smtp_host or not smtp_user or not smtp_password:
+        raise RuntimeError("Configuração SMTP incompleta. Defina SMTP_HOST, SMTP_USER e SMTP_PASSWORD.")
+
+    subject = "Redefinição de senha - Gestão de Associados"
+    body = f"""
+        Olá {nome},
+
+        Código de autenticação:
+        {codigo}
+
+        Este código possui 8 dígitos.
+        Este código é válido por 15 minutos e só pode ser usado uma vez.
+
+        Se você não solicitou a redefinição, ignore esta mensagem.
+
+        Atenciosamente,
+        Equipe Gestão de Associados
+    """
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = email_from
+    msg["To"] = destinatario
+    msg.set_content(body)
+
+    # Envia via TLS
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.send_message(msg)
 
 
 def status_to_text(valor):

@@ -1,0 +1,6 @@
+streamlit
+streamlit-authenticator
+streamlit-aggrid
+psycopg2
+pandas
+python-dotenv

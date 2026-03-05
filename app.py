@@ -2,6 +2,14 @@
 
 import re
 from datetime import date
+import os
+import secrets
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    # python-dotenv não está instalado — continuar sem carregar .env automaticamente
+    pass
 import streamlit as st
 import streamlit_authenticator as stauth
 import os
@@ -26,6 +34,28 @@ from area_admin import area_admin
 from dialogs import dialog_cadastro_sucesso, dialog_usuario_ja_existe
 from helpers import esconder_botao_fechar_dialog
 from helpers import enviar_email_codigo
+
+
+# --- Utility -----------------------------------------------------------------------
+def _scroll_to_reset_section():
+    """Guia o usuário para a âncora da seção de validação de código."""
+    try:
+        params = st.experimental_get_query_params()
+        params["page"] = ["validar"]
+        st.experimental_set_query_params(**params)
+    except Exception:
+        pass
+
+    st.markdown(
+        """
+        <script>
+        setTimeout(function() {
+            window.location.hash = '#validar-codigo-e-redefinir-senha';
+        }, 100);
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # --- Developer hidden panel (access via ?dev=TOKEN) ---------------------------------
@@ -119,10 +149,22 @@ def main():
 
     # Prepara autenticador
     credentials = carregar_credenciais()
+
+    # Use uma chave segura a partir da variável de ambiente GESTAO_SECRET_KEY.
+    # Se não definida, gera uma chave forte em runtime (não persistente entre reinícios).
+    secret_key = os.environ.get("GESTAO_SECRET_KEY")
+    if not secret_key:
+        # Gera uma chave URL-safe longa (>=32 bytes quando codificada)
+        secret_key = secrets.token_urlsafe(48)
+        st.warning(
+            "Aviso: chave de assinatura de cookies não encontrada. "
+            "Uma chave temporária foi gerada; defina a variável de ambiente GESTAO_SECRET_KEY para persistência."
+        )
+
     authenticator = stauth.Authenticate(
         credentials,
         "gestao_associado_cookie",
-        "chave_assinatura_mude_isto",
+        secret_key,
         cookie_expiry_days=30,
     )
 
@@ -135,7 +177,7 @@ def main():
 
     # Se já autenticado, redireciona para área adequada
     if authentication_status:
-        if (username or "").lower() == "admin":
+        if (username or "").lower() in ("admin", "developer"):
             area_admin(authenticator)
         else:
             area_associado(authenticator, username or "")
@@ -173,7 +215,7 @@ def _render_login_tab(authenticator):
     username = st.session_state.get("username")
 
     if authentication_status:
-        if (username or "").lower() == "admin":
+        if (username or "").lower() in ("admin", "developer"):
             area_admin(authenticator)
         else:
             area_associado(authenticator, username or "")
@@ -291,20 +333,31 @@ def _render_cadastro_tab():
                 st.error(f"Erro ao cadastrar usuário: {e}")
 
 
-def _render_esqueceu_senha_tab():
-    """Renderiza a aba de recuperação de senha por e-mail com código de 8 dígitos."""
-    st.markdown("### Redefinir senha por e‑mail")
-    st.info("Digite o e‑mail cadastrado para receber um código de autenticação de 8 dígitos.")
+def _render_password_reset_form(*, show_header: bool = True, key_prefix: str = "tab_") -> None:
+    """Renderiza formulário de recuperação de senha com suporte a diferentes contextos."""
+    if show_header:
+        st.markdown("### Redefinir senha por e‑mail")
+        st.info("Digite o e‑mail cadastrado para receber um código de autenticação de 8 dígitos.")
 
-    email = st.text_input("E-mail", key="rec_email")
-    enviar_codigo = st.button("Enviar código", key="btn_enviar_codigo")
+    email_key = f"{key_prefix}rec_email"
+    send_btn_key = f"{key_prefix}btn_enviar_codigo"
+    code_key = f"{key_prefix}rec_codigo"
+    new_pass_key = f"{key_prefix}rec_nova_senha"
+    confirm_pass_key = f"{key_prefix}rec_conf_senha"
+    confirm_btn_key = f"{key_prefix}btn_confirmar_codigo"
+
+    validation_flag_key = f"{key_prefix}show_validation"
+
+    email = st.text_input("E-mail", key=email_key)
+    enviar_codigo = st.button("Enviar código", key=send_btn_key)
 
     if enviar_codigo:
-        if not email:
+        email_value = (email or "").strip().lower()
+        if not email_value:
             st.error("Informe o e‑mail cadastrado.")
         else:
             try:
-                dados = obter_login_por_email(email)
+                dados = obter_login_por_email(email_value)
                 if not dados:
                     st.error("E‑mail não encontrado no sistema.")
                 else:
@@ -312,24 +365,35 @@ def _render_esqueceu_senha_tab():
                     username = dados["username"]
                     nome = dados.get("nome") or username
                     token_info = inserir_token_redefinicao(login_id)
-                    
+
                     codigo = token_info["token"]
-                    # Envia e‑mail com o código (pode lançar exceção se SMTP não configurado)
                     enviar_email_codigo(email, nome, codigo)
-                    st.success("Código enviado! Verifique sua caixa de entrada (e spam). O código expira em 15 minutos.")
-                    # Guarda em session_state para a etapa de validação
+                    st.success(
+                        "Código enviado! Verifique sua caixa de entrada (e spam). O código expira em 15 minutos."
+                    )
                     st.session_state["rec_login_id"] = login_id
                     st.session_state["rec_username"] = username
+                    st.session_state[validation_flag_key] = True
+                    _scroll_to_reset_section()
             except Exception as e:  # noqa: BLE001
                 st.error(f"Erro ao enviar código: {e}")
 
-    # Etapa de verificação do código e troca de senha
-    st.markdown("---")
-    st.markdown("#### Validar código e redefinir senha")
-    codigo_input = st.text_input("Código de autenticação (8 dígitos)", key="rec_codigo")
-    nova_senha_rec = st.text_input("Nova senha", type="password", key="rec_nova_senha")
-    confirma_senha_rec = st.text_input("Confirmar nova senha", type="password", key="rec_conf_senha")
-    submitted_rec = st.button("Confirmar e redefinir", key="btn_confirmar_codigo")
+    show_validation = bool(st.session_state.get(validation_flag_key)) and bool(
+        st.session_state.get("rec_login_id")
+    )
+
+    if show_validation:
+        st.markdown("---")
+        st.markdown("#### Validar código e redefinir senha")
+        codigo_input = st.text_input("Código de autenticação (8 dígitos)", key=code_key)
+        nova_senha_rec = st.text_input("Nova senha", type="password", key=new_pass_key)
+        confirma_senha_rec = st.text_input("Confirmar nova senha", type="password", key=confirm_pass_key)
+        submitted_rec = st.button("Confirmar e redefinir", key=confirm_btn_key)
+    else:
+        submitted_rec = False
+        codigo_input = ""
+        nova_senha_rec = ""
+        confirma_senha_rec = ""
 
     if submitted_rec:
         if not codigo_input or not nova_senha_rec or not confirma_senha_rec:
@@ -351,16 +415,27 @@ def _render_esqueceu_senha_tab():
                     st.error("Código inválido, expirado ou já utilizado.")
                     return
 
-                # Atualiza a senha do usuário
                 senha_hash = stauth.Hasher.hash_list([nova_senha_rec])[0]
                 atualizar_senha_usuario(username, senha_hash)
                 consumir_token(login_id, codigo_input)
                 st.success("✅ Senha redefinida com sucesso! Faça login com sua nova senha.")
-                # Limpa state relacionado
-                for k in ("rec_login_id", "rec_username", "rec_email", "rec_codigo"):
+                for k in (
+                    "rec_login_id",
+                    "rec_username",
+                    email_key,
+                    code_key,
+                    new_pass_key,
+                    confirm_pass_key,
+                    validation_flag_key,
+                ):
                     st.session_state.pop(k, None)
             except Exception as e:  # noqa: BLE001
                 st.error(f"Erro ao redefinir senha: {e}")
+
+
+def _render_esqueceu_senha_tab():
+    """Renderiza a aba de recuperação de senha por e-mail com código de 8 dígitos."""
+    _render_password_reset_form(show_header=True, key_prefix="tab_")
 
 
 if __name__ == "__main__":

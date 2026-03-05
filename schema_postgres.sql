@@ -22,3 +22,14 @@ VALUES (
     TRUE
 )
 ON CONFLICT (username) DO NOTHING;
+
+-- Tabela para tokens de redefinição de senha por e-mail
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id SERIAL PRIMARY KEY,
+    login_id INTEGER NOT NULL REFERENCES login(id) ON DELETE CASCADE,
+    token VARCHAR(16) NOT NULL,
+    usado BOOLEAN NOT NULL DEFAULT FALSE,
+    criado_em TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expira_em TIMESTAMP WITH TIME ZONE NOT NULL,
+    usado_em TIMESTAMP WITH TIME ZONE NULL
+);

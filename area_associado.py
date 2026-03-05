@@ -5,6 +5,7 @@ from datetime import date
 from decimal import Decimal
 import pandas as pd
 import streamlit as st
+from io import BytesIO
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 from db import (
@@ -228,6 +229,30 @@ def area_associado(authenticator, username: str) -> None:
     data_nasc_valor = associado.get("data_nascimento") or date(2000, 1, 1)
 
     with st.form("form_associado_dados"):
+        # Exibe foto de perfil atual, se existir (acima do CPF)
+        foto_atual = associado.get("foto")
+        if foto_atual:
+            try:
+                # DB pode retornar memoryview; converte para bytes se necessário
+                if isinstance(foto_atual, memoryview):
+                    foto_bytes = foto_atual.tobytes()
+                elif isinstance(foto_atual, (bytes, bytearray)):
+                    foto_bytes = bytes(foto_atual)
+                else:
+                    # Se for outro tipo (ex: str base64), tente usar diretamente
+                    foto_bytes = foto_atual
+
+                if isinstance(foto_bytes, (bytes, bytearray)):
+                    st.image(BytesIO(foto_bytes), width=140)
+                else:
+                    st.image(foto_bytes, width=140)
+            except Exception:
+                # Falha ao renderizar imagem — log silencioso e continuar
+                pass
+
+        # Foto de perfil
+        foto_file = st.file_uploader("Foto de perfil", type=["jpg", "jpeg", "png"], key="assoc_foto")
+
         cpf = st.text_input("CPF", value=associado.get("cpf", ""), disabled=True)
         nome_completo = st.text_input(
             "Nome completo",
@@ -319,6 +344,9 @@ def area_associado(authenticator, username: str) -> None:
                 if identidade_codigo is None:
                     raise ValueError("Identidade inválida selecionada.")
 
+                # Preserva foto existente se nenhum novo arquivo for enviado
+                foto_bytes = foto_file.getvalue() if foto_file is not None else associado.get("foto")
+
                 atualizar_associado_completo(
                     associado_id=associado["id"],
                     login_id=associado["login_id"],
@@ -334,6 +362,7 @@ def area_associado(authenticator, username: str) -> None:
                     tipo_sanguineo=tipo_sanguineo,
                     quantidade_filhos=int(quantidade_filhos),
                     identidade=identidade_codigo,
+                    foto_bytes=foto_bytes,
                 )
                 st.session_state["msg_sucesso"] = "Dados atualizados com sucesso."
                 st.rerun()
