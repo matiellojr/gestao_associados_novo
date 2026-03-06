@@ -9,6 +9,46 @@ import random
 from datetime import datetime, timedelta, timezone
 
 
+def _read_secret_var(var_name: str, default: Optional[str] = None) -> Optional[str]:
+    """Tenta obter variáveis de ambiente ou valores definidos em st.secrets."""
+
+    env_value = os.getenv(var_name)
+    if env_value not in (None, ""):
+        return env_value
+
+    try:
+        import streamlit as st  # type: ignore
+
+        secrets_obj = getattr(st, "secrets", None)
+        if not secrets_obj:
+            return default
+
+        # Tenta buscar diretamente pelo nome completo (ex.: DB_HOST)
+        try:
+            secret_value = secrets_obj[var_name]
+            if secret_value not in (None, ""):
+                return str(secret_value)
+        except Exception:
+            pass
+
+        # Permite configurações agrupadas em uma seção [db]
+        try:
+            db_section = secrets_obj["db"]
+            normalized_key = var_name.replace("DB_", "").lower()
+
+            if normalized_key in db_section and db_section[normalized_key] not in (None, ""):
+                return str(db_section[normalized_key])
+
+            if var_name in db_section and db_section[var_name] not in (None, ""):
+                return str(db_section[var_name])
+        except Exception:
+            pass
+    except Exception:
+        return default
+
+    return default
+
+
 def get_connection():
     """Retorna uma conexão com o PostgreSQL usando variáveis de ambiente.
 
@@ -20,11 +60,11 @@ def get_connection():
     - DB_PASSWORD (default: postgres)
     """
 
-    host = os.getenv("DB_HOST", "localhost")
-    port = int(os.getenv("DB_PORT", "5432"))
-    dbname = os.getenv("DB_NAME", "gestao_associado_novo")
-    user = os.getenv("DB_USER", "postgres")
-    password = os.getenv("DB_PASSWORD", "postgres")
+    host = _read_secret_var("DB_HOST", "localhost")
+    port = int(_read_secret_var("DB_PORT", "5432"))
+    dbname = _read_secret_var("DB_NAME", "gestao_associado_novo")
+    user = _read_secret_var("DB_USER", "postgres")
+    password = _read_secret_var("DB_PASSWORD", "postgres")
 
     return psycopg2.connect(
         host=host,
