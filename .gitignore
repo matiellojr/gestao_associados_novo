@@ -46,3 +46,4 @@ Thumbs.db
 
 # Environment variables
 .env
+.streamlit/secrets.toml
