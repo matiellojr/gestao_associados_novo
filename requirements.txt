@@ -1,6 +1,6 @@
 streamlit
 streamlit-authenticator
 streamlit-aggrid
-psycopg2
+psycopg2-binary
 pandas
 python-dotenv
