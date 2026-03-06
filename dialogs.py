@@ -1,10 +1,11 @@
 """Todos os diálogos da aplicação."""
 
 from datetime import date, datetime
+from io import BytesIO
+
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from io import BytesIO
 
 from db import (
     atualizar_mensalidade,
@@ -21,7 +22,6 @@ def dialog_cadastro_sucesso() -> None:
     st.success("Usuário e associado cadastrados com sucesso!")
 
     if st.button("OK"):
-        # Zera campos de cadastro
         st.session_state["cad_nome"] = ""
         st.session_state["cad_cpf"] = ""
         st.session_state["cad_senha"] = ""
@@ -57,7 +57,6 @@ def dialog_sucesso_edicao(mensagem: str) -> None:
             st.rerun()
         else:
             st.experimental_rerun()
-
 
 @st.dialog("⚠️ Aviso!")
 def dialog_usuario_ja_existe() -> None:
@@ -205,7 +204,7 @@ def dialog_editar_mensalidade(row) -> None:
             elif is_admin_user:
                 col1, col2 = st.columns(2)
                 salvar = col1.form_submit_button("Salvar", type="primary", use_container_width=True)
-                cancelar = col2.form_submit_button("Cancelar", use_container_width=True)
+                cancelar = col2.form_submit_button("Fechar", use_container_width=True)
             else:
                 cancelar = st.form_submit_button("Fechar", use_container_width=True)
                 salvar = False
@@ -401,7 +400,7 @@ def dialog_editar_mensalidade(row) -> None:
                 key=f"btn_salvar_pag_{row['id']}",
             )
             cancelar_pag = colp2.button(
-                "Cancelar",
+                "Fechar",
                 use_container_width=True,
                 key=f"btn_cancelar_pag_{row['id']}",
             )
@@ -514,7 +513,7 @@ def dialog_excluir_mensalidade(row) -> None:
 
     col1, col2 = st.columns(2)
     excluir = col1.button("Excluir", type="primary", use_container_width=True)
-    cancelar = col2.button("Cancelar", use_container_width=True)
+    cancelar = col2.button("Fechar", use_container_width=True)
 
     if excluir:
         try:
@@ -745,7 +744,7 @@ def dialog_editar_associado(row) -> None:
 
             col1, col2 = st.columns(2)
             salvar_pessoal = col1.form_submit_button("Salvar", type="primary", use_container_width=True)
-            cancelar_pessoal = col2.form_submit_button("Cancelar", use_container_width=True)
+            cancelar_pessoal = col2.form_submit_button("Fechar", use_container_width=True)
 
             if salvar_pessoal:
                 try:
@@ -912,7 +911,7 @@ def dialog_editar_associado(row) -> None:
             
             col1, col2 = st.columns(2)
             salvar_admin = col1.form_submit_button("Salvar", type="primary", use_container_width=True)
-            cancelar_admin = col2.form_submit_button("Cancelar", use_container_width=True)
+            cancelar_admin = col2.form_submit_button("Fechar", use_container_width=True)
             
             if salvar_admin:
                 try:
