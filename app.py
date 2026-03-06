@@ -125,7 +125,12 @@ def _maybe_render_dev_panel():
 
 
 def main():
-    st.set_page_config(page_title="Login", page_icon="🔐", layout="centered")
+    st.set_page_config(
+        page_title="Login",
+        page_icon="🔐",
+        layout="centered",
+        initial_sidebar_state="expanded",
+    )
 
     # Esconde o botão "X" de diálogos específicos
     esconder_botao_fechar_dialog()

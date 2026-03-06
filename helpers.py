@@ -2,6 +2,7 @@
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from datetime import date, datetime
 from decimal import Decimal
 import os
@@ -26,6 +27,95 @@ def esconder_botao_fechar_dialog() -> None:
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def solicitar_fechamento_sidebar() -> None:
+    """Marca que a sidebar deve ser fechada no próximo rerun."""
+    st.session_state["_fechar_sidebar_apos_menu"] = True
+
+
+def fechar_sidebar_ao_clicar_menu() -> None:
+    """Fecha a sidebar após uma troca de menu já processada pelo Streamlit."""
+    should_close = st.session_state.pop("_fechar_sidebar_apos_menu", False)
+    should_close_js = "true" if should_close else "false"
+
+    html_script = """
+        <script>
+        (function() {
+            const w = window.parent;
+            const doc = w.document;
+            const shouldClose = __SHOULD_CLOSE__;
+
+            const getSidebar = () => doc.querySelector('section[data-testid="stSidebar"]');
+
+            const findCloseButton = () => {
+                const selectors = [
+                    'button[data-testid="stSidebarCollapseButton"]',
+                    'button[data-testid="baseButton-headerNoPadding"]',
+                    'button[aria-label="Close sidebar"]',
+                    'button[aria-label="Collapse sidebar"]'
+                ];
+
+                for (const selector of selectors) {
+                    const btn = doc.querySelector(selector);
+                    if (btn) return btn;
+                }
+
+                return Array.from(doc.querySelectorAll('button')).find((btn) => {
+                    const label = (btn.getAttribute('aria-label') || btn.title || btn.textContent || '')
+                        .toLowerCase()
+                        .trim();
+                    return label.includes('sidebar')
+                        && (label.includes('close') || label.includes('collapse') || label.includes('fechar') || label.includes('recolher'));
+                }) || null;
+            };
+
+            const findOpenButton = () => {
+                return Array.from(doc.querySelectorAll('button')).find((btn) => {
+                    const label = (btn.getAttribute('aria-label') || btn.title || btn.textContent || '')
+                        .toLowerCase()
+                        .trim();
+                    return label.includes('sidebar')
+                        && (label.includes('open') || label.includes('expand') || label.includes('abrir') || label.includes('expandir'));
+                }) || null;
+            };
+
+            const tryClose = () => {
+                const sidebar = getSidebar();
+                if (!sidebar) return false;
+
+                const isExpanded = sidebar.getAttribute('aria-expanded') === 'true'
+                    || sidebar.offsetWidth > 80;
+
+                const closeBtn = findCloseButton();
+
+                if (isExpanded && closeBtn) {
+                    closeBtn.click();
+                    return true;
+                }
+
+                return false;
+            };
+
+            if (!shouldClose) return;
+
+            let attempts = 0;
+            const timer = setInterval(() => {
+                attempts += 1;
+                const closed = tryClose();
+                if (closed || attempts >= 12) {
+                    clearInterval(timer);
+                }
+            }, 150);
+        })();
+        </script>
+        """.replace("__SHOULD_CLOSE__", should_close_js)
+
+    components.html(
+        html_script,
+        height=0,
+        width=0,
     )
 
 

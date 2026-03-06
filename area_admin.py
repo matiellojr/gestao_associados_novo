@@ -4,6 +4,7 @@ from datetime import date
 from decimal import Decimal
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 from db import (
@@ -14,13 +15,13 @@ from db import (
     listar_mensalidades,
 )
 from dialogs import (
-    dialog_sucesso_edicao,
     dialog_erro_pagamento,
     dialog_mensalidade_duplicada,
     dialog_valor_invalido,
     dialog_editar_mensalidade,
     dialog_editar_associado,
 )
+from helpers import fechar_sidebar_ao_clicar_menu, solicitar_fechamento_sidebar
 
 
 def area_admin(authenticator) -> None:
@@ -28,6 +29,8 @@ def area_admin(authenticator) -> None:
 
     name = st.session_state.get("name") or "Administrador"
     username = st.session_state.get("username") or "admin"
+
+    # Nao fecha dialogo ao clicar fora; apenas botao Cancelar
 
     with st.sidebar:
         st.header("Área do administrador")
@@ -40,17 +43,16 @@ def area_admin(authenticator) -> None:
             "Menu",
             menu_items,
             key="admin_menu",
+            on_change=solicitar_fechamento_sidebar,
         )
         authenticator.logout("Sair", "sidebar")
+
+    fechar_sidebar_ao_clicar_menu()
 
     # Se sair de "Mensalidades", limpa eventuais flags de erro de pagamento
     if menu != "Mensalidades":
         st.session_state.pop("mostrar_dialog_erro_pagamento", None)
         st.session_state.pop("erro_pagamento_msg", None)
-
-    # Exibir diálogo de sucesso de edição, se configurado
-    if st.session_state.get("mostrar_dialog_sucesso_edicao") and st.session_state.get("dialog_sucesso_msg"):
-        dialog_sucesso_edicao(st.session_state["dialog_sucesso_msg"])
 
     # Exibir diálogo de erro de pagamento, se configurado
     if (
@@ -61,9 +63,11 @@ def area_admin(authenticator) -> None:
         dialog_erro_pagamento(st.session_state["erro_pagamento_msg"])
 
     # Exibir mensagem de sucesso em banner se houver
-    if "msg_sucesso" in st.session_state and not st.session_state.get("mostrar_dialog_sucesso_edicao"):
+    if "msg_sucesso" in st.session_state:
         st.success(st.session_state["msg_sucesso"])
         st.session_state.pop("msg_sucesso")
+        st.session_state.pop("dialog_sucesso_msg", None)
+        st.session_state.pop("mostrar_dialog_sucesso_edicao", None)
 
     if menu == "Mensalidades":
         _render_mensalidades_section()
@@ -74,6 +78,52 @@ def area_admin(authenticator) -> None:
         return
 
     _render_associados_section()
+
+
+def _get_query_param(name: str):
+    """Lê query param com compatibilidade entre versões do Streamlit."""
+    try:
+        value = st.query_params.get(name)
+        if isinstance(value, list):
+            return value[0] if value else None
+        return value
+    except Exception:
+        try:
+            value = st.experimental_get_query_params().get(name)
+            if isinstance(value, list):
+                return value[0] if value else None
+            return value
+        except Exception:
+            return None
+
+
+def _is_mobile_view() -> bool:
+    """Detecta largura de tela para alternar layout no admin."""
+    mobile_param = _get_query_param("mobile")
+    if str(mobile_param).lower() in ("1", "true"):
+        return True
+    if str(mobile_param).lower() in ("0", "false"):
+        return False
+
+    # Define o modo com base no viewport e recarrega com query param
+    components.html(
+        """
+        <script>
+        (function() {
+            const isMobile = window.innerWidth <= 768;
+            const url = new URL(window.location.href);
+            if (!url.searchParams.get('mobile')) {
+                url.searchParams.set('mobile', isMobile ? '1' : '0');
+                window.location.replace(url.toString());
+            }
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+    # Fallback: assume desktop until query param is set by JS
+    return False
 
 
 def _render_mensalidades_section():
@@ -105,8 +155,26 @@ def _render_lancar_mensalidade():
     if not associados_disponiveis:
         st.warning("Nenhum associado CONTRIBUINTE e HABILITADO disponível para lançamento.")
     else:
+        if _is_mobile_view():
+            busca_nome = st.text_input(
+                "🔍 Procurar por nome",
+                placeholder="Digite o nome do associado...",
+                key="busca_nome_assoc_mensalidade_mobile",
+            )
+        else:
+            busca_nome = None
+
+        if busca_nome:
+            associados_disponiveis = [
+                a for a in associados_disponiveis
+                if busca_nome.strip().lower() in str(a.get("nome_completo", "")).lower()
+            ]
+            if not associados_disponiveis:
+                st.warning("Nenhum associado encontrado com esse nome.")
+                return
+
         opcoes_assoc = {
-            f"{a['nome_completo']} - {a['cpf']}": a["id"] for a in associados_disponiveis
+            f"{a['nome_completo']}": a["id"] for a in associados_disponiveis
         }
         opcoes_lista = [""] + list(opcoes_assoc.keys())
         associado_sel = st.selectbox(
@@ -182,8 +250,8 @@ def _render_lancar_mensalidade():
                 st.rerun()
             except ValueError as e:
                 msg = str(e)
-                if "Já existe uma mensalidade para este associado neste mês." in msg:
-                    dialog_mensalidade_duplicada(msg)
+                if "Já existe uma mensalidade para este associado neste mês" in msg:
+                    dialog_mensalidade_duplicada("Já existe uma mensalidade para este associado neste mês.")
                 elif "Valor deve ser maior que zero." in msg:
                     dialog_valor_invalido(msg)
                 else:
@@ -214,6 +282,7 @@ def _render_listar_mensalidades():
         return
     
     df_mens = pd.DataFrame(mensalidades)
+    mensalidade_by_id = {m.get("id"): m for m in mensalidades if m.get("id") is not None}
 
     # Normalizar dados
     def _valor_to_float(v):
@@ -291,36 +360,84 @@ def _render_listar_mensalidades():
 
     df_mens["acao"] = "Editar"
 
-    # Aplicar filtro de busca
-    if busca and busca.strip():
-        busca_lower = busca.strip().lower()
-        
-        def _match_filter(row):
-            # Buscar no nome
-            nome = str(row.get("nome_completo", "")).lower()
-            if busca_lower in nome:
-                return True
-            
-            # Buscar no mês/ano do vencimento (formato MM/AAAA ou M/AAAA)
-            data_venc_str = str(row.get("data_vencimento", ""))
-            if data_venc_str:
-                # Se a data está no formato DD/MM/AAAA, extrair MM/AAAA
-                parts = data_venc_str.split("/")
-                if len(parts) == 3:
-                    mes_ano = f"{parts[1]}/{parts[2]}"  # MM/AAAA
-                    if busca_lower in mes_ano.lower():
-                        return True
-                # Também buscar na string completa
-                if busca_lower in data_venc_str.lower():
+    busca_lower = (busca or "").strip().lower()
+
+    def _match_filter(row):
+        if not busca_lower:
+            return True
+
+        # Buscar no nome
+        nome = str(row.get("nome_completo", "")).lower()
+        if busca_lower in nome:
+            return True
+
+        # Buscar no mes/ano do vencimento (formato MM/AAAA ou M/AAAA)
+        data_venc_str = str(row.get("data_vencimento", ""))
+        if data_venc_str:
+            parts = data_venc_str.split("/")
+            if len(parts) == 3:
+                mes_ano = f"{parts[1]}/{parts[2]}"
+                if busca_lower in mes_ano.lower():
                     return True
-            
-            return False
-        
+            if busca_lower in data_venc_str.lower():
+                return True
+
+        return False
+
+    # Aplicar filtro de busca (antes do modo mobile)
+    if busca_lower:
         df_mens = df_mens[df_mens.apply(_match_filter, axis=1)]
-        
+
         if df_mens.empty:
             st.info(f"Nenhuma mensalidade encontrada para: {busca}")
             return
+
+    if _is_mobile_view():
+        # Lista simples para celular (evita WebSocket pesado do AgGrid)
+        cols_visiveis = [
+            col
+            for col in ["nome_completo", "data_vencimento", "status_mensalidade"]
+            if col in df_mens.columns
+        ]
+        if cols_visiveis:
+            df_mobile = df_mens[cols_visiveis].rename(
+                columns={
+                    "nome_completo": "Associado",
+                    "data_vencimento": "Vencimento",
+                    "status_mensalidade": "Status da Mensalidade",
+                }
+            )
+            st.dataframe(df_mobile, use_container_width=True, hide_index=True)
+
+        rows = df_mens.to_dict("records")
+        if busca_lower:
+            rows = [r for r in rows if _match_filter(r)]
+            if not rows:
+                st.info(f"Nenhuma mensalidade encontrada para: {busca}")
+                return
+        row_by_id = {r.get("id"): r for r in rows if r.get("id") is not None}
+        if row_by_id:
+            ordered_ids = sorted(
+                row_by_id.keys(),
+                key=lambda _id: str(row_by_id.get(_id, {}).get("nome_completo", "")).lower(),
+            )
+            def _label_mid(_id):
+                r = row_by_id.get(_id, {})
+                nome = r.get("nome_completo", "")
+                venc = r.get("data_vencimento", "")
+                status = r.get("status_mensalidade", "")
+                return f"{nome} - {venc} - {status}".strip(" -")
+
+            selected_id = st.selectbox(
+                "Selecionar mensalidade para editar",
+                ordered_ids,
+                format_func=_label_mid,
+                key="admin_mensalidade_select",
+            )
+            if st.button("Editar mensalidade", type="primary"):
+                row_raw = mensalidade_by_id.get(selected_id, row_by_id[selected_id])
+                dialog_editar_mensalidade(row_raw)
+        return
 
     gb_m = GridOptionsBuilder.from_dataframe(df_mens)
     gb_m.configure_column("nome_completo", header_name="Associado", flex=1)
@@ -382,31 +499,33 @@ def _render_listar_mensalidades():
 
     selected_rows_m = grid_response_m["selected_rows"]
 
-    # Só abre o diálogo se houver uma NOVA seleção (ignora cliques em células de linhas já selecionadas)
+    # Só abre o diálogo se houver uma NOVA seleção
     if selected_rows_m is not None and len(selected_rows_m) > 0:
         row_m_id = selected_rows_m.iloc[0].get("id")
         last_selected_id = st.session_state.get("last_selected_mensalidade_admin_id")
-        
-        # Só abre diálogo se for uma nova seleção diferente
+
         if row_m_id != last_selected_id:
             st.session_state["last_selected_mensalidade_admin_id"] = row_m_id
             row_m = selected_rows_m.iloc[0].to_dict()
-            dialog_editar_mensalidade(row_m)
+            row_raw = mensalidade_by_id.get(row_m_id, row_m)
+            dialog_editar_mensalidade(row_raw)
     else:
-        # Limpa o ID quando não há seleção
         st.session_state.pop("last_selected_mensalidade_admin_id", None)
 
 
 def _render_associados_section():
     """Renderiza a seção de gestão de associados."""
     st.subheader("Associados")
-    
+
+    # Controla quando o dialog foi solicitado nesta execução
+    st.session_state["associado_dialog_requested"] = False
+
     busca_nome = st.text_input(
         "🔍 Procurar por nome",
         placeholder="Digite o nome do associado...",
         key="busca_nome_associado"
     )
-    
+
     try:
         associados = listar_associados()
     except Exception as e:  # noqa: BLE001
@@ -454,6 +573,40 @@ def _render_associados_section():
 
     df["acao"] = "Editar"
 
+    if _is_mobile_view():
+        # Somente seletor no celular (sem grid)
+        filtered_ids = set(df["id"].tolist()) if "id" in df.columns else set()
+        assoc_by_id = {
+            a.get("id"): a
+            for a in associados
+            if a.get("id") is not None and (not filtered_ids or a.get("id") in filtered_ids)
+        }
+        if assoc_by_id:
+            def _label_assoc(_id):
+                a = assoc_by_id.get(_id, {})
+                nome = a.get("nome_completo", "")
+                cpf = a.get("cpf", "")
+                return f"{nome} - {cpf}".strip(" -")
+
+            selected_id = st.selectbox(
+                "Selecionar associado para editar",
+                [None] + list(assoc_by_id.keys()),
+                format_func=_label_assoc,
+                key="admin_assoc_select",
+            )
+            if st.button("Editar associado", type="primary"):
+                if selected_id is None:
+                    st.info("Selecione um associado para editar.")
+                else:
+                    st.session_state["associado_dialog_requested"] = True
+                    dialog_editar_associado(assoc_by_id[selected_id])
+        return
+
+    # Se o diálogo foi fechado, força re-render da grid para liberar a seleção
+    if not st.session_state.get("associado_dialog_active") and st.session_state.get("last_selected_associado_id") is not None:
+        st.session_state["grid_counter"] = st.session_state.get("grid_counter", 0) + 1
+        st.session_state.pop("last_selected_associado_id", None)
+
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_column("cpf", header_name="CPF", width=140)
     gb.configure_column("nome_completo", header_name="Nome", flex=1)
@@ -478,6 +631,10 @@ def _render_associados_section():
                     if (params.api && params.api.deselectAll) {
                         params.api.deselectAll();
                     }
+                    // Forca disparo de selecao mesmo se a linha ja estava selecionada
+                    try {
+                        params.node.setSelected(false);
+                    } catch (e) {}
                     params.node.setSelected(true);
                 });
             }
@@ -512,13 +669,18 @@ def _render_associados_section():
 
     selected_rows = grid_response["selected_rows"]
 
+    # Se o diálogo não está ativo, libera a seleção para reabrir a mesma linha
+    if not st.session_state.get("associado_dialog_active"):
+        st.session_state.pop("last_selected_associado_id", None)
+
     # Só abre o diálogo se houver uma NOVA seleção (ignora cliques em células de linhas já selecionadas)
     if selected_rows is not None and len(selected_rows) > 0:
         row_id = selected_rows.iloc[0].get("id")
         last_selected_id = st.session_state.get("last_selected_associado_id")
 
         # Só abre diálogo se for uma nova seleção diferente
-        if row_id != last_selected_id:
+        dialog_active = st.session_state.get("associado_dialog_active")
+        if row_id != last_selected_id or not dialog_active:
             st.session_state["last_selected_associado_id"] = row_id
             # Recupera o registro original da lista 'associados' para preservar 'foto' (bytes)
             original = None
@@ -531,13 +693,21 @@ def _render_associados_section():
                 original = None
 
             if original is not None:
+                st.session_state["associado_dialog_requested"] = True
                 dialog_editar_associado(original)
             else:
                 # Fallback: usa os dados da grid se não encontrar o original
                 row = selected_rows.iloc[0].to_dict()
+                st.session_state["associado_dialog_requested"] = True
                 dialog_editar_associado(row)
     else:
         # Limpa o ID quando não há seleção
+        st.session_state.pop("last_selected_associado_id", None)
+
+    # Se o dialog foi fechado sem passar pelo Cancelar, limpa estado e força re-render
+    if st.session_state.get("associado_dialog_active") and not st.session_state.get("associado_dialog_requested"):
+        st.session_state["associado_dialog_active"] = False
+        st.session_state["grid_counter"] = st.session_state.get("grid_counter", 0) + 1
         st.session_state.pop("last_selected_associado_id", None)
 
 

@@ -5,6 +5,8 @@ from datetime import date
 from decimal import Decimal
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
+from annotated_text import annotated_text
 from io import BytesIO
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
@@ -15,22 +17,170 @@ from db import (
     atualizar_associado_completo,
 )
 from dialogs import dialog_editar_mensalidade
+from helpers import fechar_sidebar_ao_clicar_menu, solicitar_fechamento_sidebar
+
+
+def _get_query_param(name: str):
+    """Lê query param com compatibilidade entre versões do Streamlit."""
+    try:
+        value = st.query_params.get(name)
+        if isinstance(value, list):
+            return value[0] if value else None
+        return value
+    except Exception:
+        try:
+            value = st.experimental_get_query_params().get(name)
+            if isinstance(value, list):
+                return value[0] if value else None
+            return value
+        except Exception:
+            return None
+
+
+def _set_query_param(name: str, value: str) -> None:
+    """Define query param com compatibilidade entre versões do Streamlit."""
+    try:
+        st.query_params[name] = value
+    except Exception:
+        try:
+            params = st.experimental_get_query_params()
+            params[name] = [value]
+            st.experimental_set_query_params(**params)
+        except Exception:
+            pass
+
+
+def _is_mobile_view() -> bool:
+    """Detecta largura de tela para alternar layout no associado."""
+    mobile_param = _get_query_param("mobile")
+    if str(mobile_param).lower() in ("1", "true"):
+        return True
+    if str(mobile_param).lower() in ("0", "false"):
+        return False
+
+    components.html(
+        """
+        <script>
+        (function() {
+            const isMobile = window.innerWidth <= 768;
+            const url = new URL(window.location.href);
+            if (!url.searchParams.get('mobile')) {
+                url.searchParams.set('mobile', isMobile ? '1' : '0');
+                window.location.replace(url.toString());
+            }
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+    return False
+
+
+def _controlar_auto_refresh_mensalidades(ativo: bool, interval_ms: int = 15000) -> None:
+    """Controla atualização automática da aba de mensalidades.
+
+    Quando ativo, agenda recarga da página para refletir mudanças de pagamento.
+    Se houver dialog aberto, a recarga é adiada para não interromper a edição.
+    """
+    ativo_js = "true" if ativo else "false"
+    html_script = f"""
+        <script>
+        (function() {{
+            const w = window.parent;
+            const storageKey = 'assoc_mens_scroll_y';
+
+            const salvarPosicaoScroll = () => {{
+                try {{
+                    w.sessionStorage.setItem(storageKey, String(w.scrollY || w.pageYOffset || 0));
+                }} catch (e) {{
+                    // ignora falha de storage
+                }}
+            }};
+
+            const restaurarPosicaoScroll = () => {{
+                try {{
+                    const valor = w.sessionStorage.getItem(storageKey);
+                    if (valor === null) return;
+                    const posicao = Number(valor);
+                    if (!Number.isNaN(posicao) && posicao > 0) {{
+                        w.requestAnimationFrame(() => {{
+                            w.scrollTo({{ top: posicao, behavior: 'auto' }});
+                        }});
+                        setTimeout(() => w.scrollTo({{ top: posicao, behavior: 'auto' }}), 150);
+                    }}
+                }} catch (e) {{
+                    // ignora falha de storage
+                }}
+            }};
+
+            restaurarPosicaoScroll();
+
+            if (w.__mensalidadesAutoRefreshTimer) {{
+                clearTimeout(w.__mensalidadesAutoRefreshTimer);
+                w.__mensalidadesAutoRefreshTimer = null;
+            }}
+
+            const ativo = {ativo_js};
+            if (!ativo) {{
+                try {{
+                    w.sessionStorage.removeItem(storageKey);
+                }} catch (e) {{
+                    // ignora falha de storage
+                }}
+                return;
+            }}
+
+            const tentarRecarregar = () => {{
+                const dialogAberto = w.document.querySelector('[data-testid="stDialog"]');
+                const paginaVisivel = w.document.visibilityState === 'visible';
+
+                if (dialogAberto || !paginaVisivel) {{
+                    w.__mensalidadesAutoRefreshTimer = setTimeout(tentarRecarregar, {interval_ms});
+                    return;
+                }}
+
+                salvarPosicaoScroll();
+                w.location.reload();
+            }};
+
+            w.__mensalidadesAutoRefreshTimer = setTimeout(tentarRecarregar, {interval_ms});
+        }})();
+        </script>
+        """
+    components.html(html_script, height=0, width=0)
 
 
 def area_associado(authenticator, username: str) -> None:
     """Área do associado: visualização/edição de dados pessoais."""
 
     name = st.session_state.get("name") or username
+    menu_options = ["Dados pessoais", "Mensalidades"]
+    menu_query = _get_query_param("assoc_menu")
+
+    if menu_query in menu_options:
+        st.session_state["assoc_menu"] = menu_query
+    elif "assoc_menu" not in st.session_state:
+        st.session_state["assoc_menu"] = "Dados pessoais"
+
+    def _on_assoc_menu_change() -> None:
+        menu_atual = st.session_state.get("assoc_menu", "Dados pessoais")
+        _set_query_param("assoc_menu", menu_atual)
+        solicitar_fechamento_sidebar()
 
     with st.sidebar:
         st.header("Área do associado")
         st.markdown(f"Usuário: {name}")
         menu = st.radio(
             "Menu",
-            ["Dados pessoais", "Mensalidades"],
+            menu_options,
             key="assoc_menu",
+            on_change=_on_assoc_menu_change,
         )
         authenticator.logout("Sair", "sidebar")
+
+    fechar_sidebar_ao_clicar_menu()
+    _controlar_auto_refresh_mensalidades(menu == "Mensalidades")
 
     if "msg_sucesso" in st.session_state:
         st.success(st.session_state["msg_sucesso"])
@@ -51,6 +201,7 @@ def area_associado(authenticator, username: str) -> None:
 
     if menu == "Mensalidades":
         st.subheader("Minhas Mensalidades")
+        st.caption("Atualização automática ativa a cada 15 segundos.")
         
         try:
             mensalidades = listar_mensalidades(associado_id=associado["id"])
@@ -61,6 +212,9 @@ def area_associado(authenticator, username: str) -> None:
         if not mensalidades:
             st.info("Você não possui mensalidades lançadas.")
         else:
+            modo_mobile = _is_mobile_view()
+            if modo_mobile:
+                st.caption("Modo lista simples ativado (mobile).")
             df_mens = pd.DataFrame(mensalidades)
 
             # Normalizar dados (mesma lógica da área admin)
@@ -133,18 +287,109 @@ def area_associado(authenticator, username: str) -> None:
                     pass
                 return str(valor)
 
+            def _status_badge(texto):
+                texto_limpo = str(texto or "").strip()
+                cores = {
+                    "pago": "#a9d8b8",
+                    "não pago": "#f1b0b7",
+                    "ainda falta pagar!": "#ffe08a",
+                }
+                cor = cores.get(texto_limpo.lower(), "#ced4da")
+                return (texto_limpo or "-", "", cor)
+
             for col in ["status_mensalidade", "status_pagamento"]:
                 if col in df_mens.columns:
                     df_mens[col] = df_mens[col].apply(_status_to_text)
 
+            def _status_pago_style(valor):
+                texto = str(valor or "").strip().lower()
+                if texto == "pago":
+                    return "color: #198754; font-weight: 700;"
+                return ""
+
             df_mens["acao"] = "Editar"
+
+            if modo_mobile:
+                # Lista simples para celular (evita WebSocket pesado do AgGrid)
+                rows = df_mens.to_dict("records")
+                for row in rows:
+                    with st.container(border=True):
+                        st.markdown(f"**Vencimento:** {row.get('data_vencimento', '-')}")
+                        if "valor" in row:
+                            try:
+                                st.markdown(f"**Valor:** R$ {float(row.get('valor') or 0):.2f}")
+                            except (TypeError, ValueError):
+                                st.markdown(f"**Valor:** {row.get('valor', '-')}")
+
+                        annotated_text(
+                            "Status Mensalidade:",
+                            _status_badge(row.get("status_mensalidade")),
+                        )
+                        annotated_text(
+                            "Status Pagamento:",
+                            _status_badge(row.get("status_pagamento")),
+                        )
+
+                row_by_id = {r.get("id"): r for r in rows if r.get("id") is not None}
+                if row_by_id:
+                    def _label_mid(_id):
+                        r = row_by_id.get(_id, {})
+                        venc = r.get("data_vencimento", "")
+                        status = r.get("status_mensalidade", "")
+                        return f"{venc} - {status}".strip(" -")
+
+                    selected_id = st.selectbox(
+                        "Selecionar mensalidade para editar",
+                        list(row_by_id.keys()),
+                        format_func=_label_mid,
+                        key="assoc_mensalidade_select",
+                    )
+                    if st.button("Editar mensalidade", type="primary"):
+                        dialog_editar_mensalidade(row_by_id[selected_id])
+                return
 
             # Configuração da grid AgGrid
             gb_m = GridOptionsBuilder.from_dataframe(df_mens)
+            status_cell_style = JsCode("""
+                function(params) {
+                    const value = String(params.value || '').trim().toLowerCase();
+                    if (value === 'pago') {
+                        return {
+                            color: '#0f5132',
+                            backgroundColor: '#d1e7dd',
+                            borderRadius: '6px',
+                            paddingLeft: '6px',
+                            paddingRight: '6px',
+                            fontWeight: '700'
+                        };
+                    }
+                    if (value === 'não pago') {
+                        return {
+                            color: '#842029',
+                            backgroundColor: '#f8d7da',
+                            borderRadius: '6px',
+                            paddingLeft: '6px',
+                            paddingRight: '6px',
+                            fontWeight: '700'
+                        };
+                    }
+                    if (value === 'ainda falta pagar!') {
+                        return {
+                            color: '#664d03',
+                            backgroundColor: '#fff3cd',
+                            borderRadius: '6px',
+                            paddingLeft: '6px',
+                            paddingRight: '6px',
+                            fontWeight: '700'
+                        };
+                    }
+                    return null;
+                }
+            """)
             gb_m.configure_column("id", header_name="ID", width=80)
             gb_m.configure_column("data_vencimento", header_name="Vencimento", width=120, sort="asc")
-            gb_m.configure_column("status_mensalidade", header_name="Status Mensalidade", width=160)
-            gb_m.configure_column("status_pagamento", header_name="Status Pagamento", width=150)
+            gb_m.configure_column("status_mensalidade", header_name="Status Mensalidade", width=160, cellStyle=status_cell_style)
+            gb_m.configure_column("status_pagamento", header_name="Status Pagamento", width=150, cellStyle=status_cell_style)
 
             # Ocultar colunas não necessárias (não mostra nome do associado pois é ele mesmo)
             for col in ["id", "valor", "data_emissao", "nome_completo", "associado_id", "status_mensalidade_id", "pagamento_id", "data_pagamento", "status_pagamento_id"]:

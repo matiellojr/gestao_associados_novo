@@ -3,6 +3,7 @@
 from datetime import date, datetime
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from io import BytesIO
 
 from db import (
@@ -42,7 +43,7 @@ def dialog_cadastro_sucesso() -> None:
             st.experimental_rerun()
 
 
-@st.dialog("✅ Sucesso!")
+@st.dialog("✅ Sucesso!", dismissible=False)
 def dialog_sucesso_edicao(mensagem: str) -> None:
     """Diálogo genérico de sucesso para edição de associado."""
     st.markdown("<div id='dialog_sucesso_marker'></div>", unsafe_allow_html=True)
@@ -63,7 +64,7 @@ def dialog_usuario_ja_existe() -> None:
     st.error("Usuário já existe.")
 
 
-@st.dialog("⚠️ Aviso!")
+@st.dialog("⚠️ Aviso!", dismissible=False)
 def dialog_mensalidade_duplicada(mensagem: str) -> None:
     """Mostra aviso quando já existe mensalidade no mês para o associado."""
     st.warning(mensagem)
@@ -75,7 +76,7 @@ def dialog_mensalidade_duplicada(mensagem: str) -> None:
             st.experimental_rerun()
 
 
-@st.dialog("⚠️ Aviso!")
+@st.dialog("⚠️ Aviso!", dismissible=False)
 def dialog_valor_invalido(mensagem: str) -> None:
     """Mostra aviso quando o valor informado é inválido (<= 0)."""
     st.warning(mensagem)
@@ -87,7 +88,7 @@ def dialog_valor_invalido(mensagem: str) -> None:
             st.experimental_rerun()
 
 
-@st.dialog("⚠️ Pagamento inválido")
+@st.dialog("⚠️ Pagamento inválido", dismissible=False)
 def dialog_erro_pagamento(mensagem: str) -> None:
     """Mostra erro de pagamento em um modal separado."""
     st.markdown("<div id='dialog_pagamento_invalido_marker'></div>", unsafe_allow_html=True)
@@ -102,7 +103,7 @@ def dialog_erro_pagamento(mensagem: str) -> None:
             st.experimental_rerun()
 
 
-@st.dialog("Editar Mensalidade")
+@st.dialog("Editar Mensalidade", dismissible=False)
 def dialog_editar_mensalidade(row) -> None:
     """Diálogo de edição de mensalidade com abas para dados e pagamento."""
     from datetime import datetime
@@ -117,7 +118,7 @@ def dialog_editar_mensalidade(row) -> None:
     tudo_pago = (status_mensalidade_id == 3 and status_pagamento_id == 1)
     
     if tudo_pago:
-        st.success("✅ Mensalidade e Pagamento já foram concluídos. Campos em modo somente leitura.")
+        st.success("✅ Mensalidade e Pagamento já foram concluídos. Campos em modo somente leitura, ou seja, apenas para visualização!")
     
     is_admin_user = (st.session_state.get("username", "").lower() in ("admin", "developer"))
 
@@ -128,12 +129,15 @@ def dialog_editar_mensalidade(row) -> None:
         data_venc_valor = row.get("data_vencimento")
         if isinstance(data_venc_valor, str):
             try:
-                data_venc_valor = datetime.strptime(data_venc_valor, "%Y-%m-%d").date()
+                data_venc_valor = datetime.strptime(data_venc_valor, "%d/%m/%Y").date()
             except Exception:
                 try:
-                    data_venc_valor = datetime.fromisoformat(data_venc_valor.split("T")[0]).date()
+                    data_venc_valor = datetime.strptime(data_venc_valor, "%Y-%m-%d").date()
                 except Exception:
-                    data_venc_valor = date.today()
+                    try:
+                        data_venc_valor = datetime.fromisoformat(data_venc_valor.split("T")[0]).date()
+                    except Exception:
+                        data_venc_valor = date.today()
         elif hasattr(data_venc_valor, "date"):
             data_venc_valor = data_venc_valor.date()
         elif not isinstance(data_venc_valor, date):
@@ -178,16 +182,20 @@ def dialog_editar_mensalidade(row) -> None:
                 2: "Ainda Falta Pagar!",
                 3: "Pago",
             }
-            st.selectbox(
+            status_mensalidade_sel = st.selectbox(
                 "Status da Mensalidade",
                 status_mens_opcoes,
                 format_func=lambda x: status_mens_labels.get(x, str(x)),
                 index=status_mens_opcoes.index(status_mens_id_atual)
                 if status_mens_id_atual in status_mens_opcoes
                 else 0,
-                disabled=True,
+                disabled=(not is_admin_user) or tudo_pago,
                 key=f"edit_mens_status_{row['id']}",
-                help="Status da mensalidade (somente leitura)." if tudo_pago else "Status é atualizado automaticamente conforme o pagamento.",
+                help=(
+                    "Status da mensalidade (somente leitura)."
+                    if (tudo_pago or not is_admin_user)
+                    else "Admin pode ajustar o status manualmente."
+                ),
             )
 
             # Se tudo está pago, mostrar apenas botão "Fechar"
@@ -211,6 +219,7 @@ def dialog_editar_mensalidade(row) -> None:
                         mensalidade_id=int(row["id"]),
                         valor=float(valor),
                         data_vencimento=data_vencimento,
+                        status_mensalidade_id=status_mensalidade_sel if is_admin_user else None,
                     )
 
                     st.session_state["msg_sucesso"] = f"Mensalidade atualizada com sucesso."
@@ -363,6 +372,11 @@ def dialog_editar_mensalidade(row) -> None:
             disabled=desabilitar_status,
         )
 
+        salvar_pag_disabled = (not tudo_pago) and int(status_pagamento_id) != 1
+
+        if salvar_pag_disabled:
+            st.warning("Selecione 'Pago' no Status do Pagamento para habilitar o botão Salvar Pagamento.")
+
         comprovante_file = st.file_uploader(
             "Anexar novo comprovante (opcional)" if comprovante_existente else "Anexar comprovante (opcional)",
             key=f"edit_pag_comp_{row['id']}",
@@ -379,7 +393,6 @@ def dialog_editar_mensalidade(row) -> None:
             salvar_pag = False
         else:
             colp1, colp2 = st.columns(2)
-            salvar_pag_disabled = int(status_pagamento_id) != 1
             salvar_pag = colp1.button(
                 "Salvar Pagamento",
                 type="primary",
@@ -387,8 +400,6 @@ def dialog_editar_mensalidade(row) -> None:
                 disabled=salvar_pag_disabled,
                 key=f"btn_salvar_pag_{row['id']}",
             )
-            if salvar_pag_disabled:
-                colp1.caption("Selecione 'Pago' no Status do Pagamento para habilitar.")
             cancelar_pag = colp2.button(
                 "Cancelar",
                 use_container_width=True,
@@ -482,14 +493,15 @@ def dialog_editar_mensalidade(row) -> None:
                     st.error(str(e))
                 except Exception as e:  # noqa: BLE001
                     st.error(f"Erro ao salvar pagamento: {e}")
-            if cancelar_pag:
-                st.session_state["grid_mens_counter"] = st.session_state.get("grid_mens_counter", 0) + 1
-                st.session_state.pop("last_selected_mensalidade_id", None)
-                st.session_state.pop("last_selected_mensalidade_admin_id", None)
-                if hasattr(st, "rerun"):
-                    st.rerun()
-                else:
-                    st.experimental_rerun()
+
+        if cancelar_pag:
+            st.session_state["grid_mens_counter"] = st.session_state.get("grid_mens_counter", 0) + 1
+            st.session_state.pop("last_selected_mensalidade_id", None)
+            st.session_state.pop("last_selected_mensalidade_admin_id", None)
+            if hasattr(st, "rerun"):
+                st.rerun()
+            else:
+                st.experimental_rerun()
 
 
 @st.dialog("Excluir Mensalidade")
@@ -522,11 +534,73 @@ def dialog_excluir_mensalidade(row) -> None:
             st.experimental_rerun()
 
 
-@st.dialog("Editar Associado")
+@st.dialog("Editar Associado", dismissible=False)
 def dialog_editar_associado(row) -> None:
     """Diálogo de edição de associado com abas para dados pessoais e administrativos."""
+    def _get_query_param(name: str):
+        try:
+            value = st.query_params.get(name)
+            if isinstance(value, list):
+                return value[0] if value else None
+            return value
+        except Exception:
+            try:
+                value = st.experimental_get_query_params().get(name)
+                if isinstance(value, list):
+                    return value[0] if value else None
+                return value
+            except Exception:
+                return None
+
+    def _clear_close_param():
+        try:
+            st.query_params.pop("close_dialog", None)
+        except Exception:
+            try:
+                params = st.experimental_get_query_params()
+                params.pop("close_dialog", None)
+                st.experimental_set_query_params(**params)
+            except Exception:
+                pass
+
+    if str(_get_query_param("close_dialog")).lower() in ("1", "true"):
+        _clear_close_param()
+        st.session_state.pop("last_selected_row_id", None)
+        st.session_state["associado_dialog_active"] = False
+        st.session_state["grid_counter"] = st.session_state.get("grid_counter", 0) + 1
+        st.session_state.pop("last_selected_associado_id", None)
+        st.rerun()
+
     st.markdown("<div id='dialog_editar_associado_marker'></div>", unsafe_allow_html=True)
     st.session_state["associado_dialog_active"] = True
+
+    components.html(
+        """
+        <script>
+        (function() {
+            const attach = () => {
+                document.addEventListener('click', function(e) {
+                    const dialog = document.querySelector('[data-testid="stDialog"]');
+                    if (!dialog) return;
+                    const path = e.composedPath ? e.composedPath() : [];
+                    const clickedInside = dialog.contains(e.target) || path.includes(dialog);
+                    if (!clickedInside) {
+                        const url = new URL(window.location.href);
+                        if (!url.searchParams.get('close_dialog')) {
+                            url.searchParams.set('close_dialog', '1');
+                            window.history.replaceState({}, '', url.toString());
+                            window.location.reload();
+                        }
+                    }
+                }, { capture: true, once: true });
+            };
+            setTimeout(attach, 0);
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
     identidade_map = {
         "SURDO": "Surdo",
@@ -734,10 +808,9 @@ def dialog_editar_associado(row) -> None:
                         tipo_associado=safe_int(row.get("tipo_associado"), 2),
                         ciclo_cobranca=safe_int(row.get("ciclo_cobranca"), 1),
                     )
-                    mensagem = f"Dados de {row['nome_completo']} atualizados com sucesso."
+                    nome_exibicao = (nome_completo or "").strip() or str(row.get("nome_completo", "")).strip()
+                    mensagem = f"Dados de {nome_exibicao} atualizados com sucesso."
                     st.session_state["msg_sucesso"] = mensagem
-                    st.session_state["dialog_sucesso_msg"] = mensagem
-                    st.session_state["mostrar_dialog_sucesso_edicao"] = True
                     st.session_state.pop("last_selected_row_id", None)
                     st.session_state["associado_dialog_active"] = False
                     st.session_state["grid_counter"] = st.session_state.get("grid_counter", 0) + 1
@@ -824,7 +897,7 @@ def dialog_editar_associado(row) -> None:
             tipo_associado = st.selectbox(
                 "Tipo de Associado",
                 [1, 2, 3],
-                format_func=lambda x: {1: "Honorários", 2: "Contribuintes", 3: "Comunitários"}[x],
+                format_func=lambda x: {1: "Honorário", 2: "Contribuinte", 3: "Comunitário"}[x],
                 index=[1, 2, 3].index(row.get("tipo_associado") or 2),
                 key=f"dialog_admin_tipo_assoc_{row['id']}",
             )
@@ -903,8 +976,6 @@ def dialog_editar_associado(row) -> None:
                     )
                     mensagem = f"Dados de {row['nome_completo']} atualizados com sucesso."
                     st.session_state["msg_sucesso"] = mensagem
-                    st.session_state["dialog_sucesso_msg"] = mensagem
-                    st.session_state["mostrar_dialog_sucesso_edicao"] = True
                     st.session_state.pop("last_selected_row_id", None)
                     st.session_state["associado_dialog_active"] = False
                     st.session_state["grid_counter"] = st.session_state.get("grid_counter", 0) + 1

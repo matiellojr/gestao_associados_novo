@@ -866,20 +866,33 @@ def atualizar_mensalidade(
     mensalidade_id: int,
     valor: float,
     data_vencimento,
+    status_mensalidade_id: Optional[int] = None,
 ) -> None:
     """Atualiza dados básicos de uma mensalidade (valor e vencimento)."""
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE mensalidade
-                SET valor = %s,
-                    data_vencimento = %s
-                WHERE id = %s
-                """,
-                (valor, data_vencimento, mensalidade_id),
-            )
+            if status_mensalidade_id is None:
+                cur.execute(
+                    """
+                    UPDATE mensalidade
+                    SET valor = %s,
+                        data_vencimento = %s
+                    WHERE id = %s
+                    """,
+                    (valor, data_vencimento, mensalidade_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE mensalidade
+                    SET valor = %s,
+                        data_vencimento = %s,
+                        status_mensalidade_id = %s
+                    WHERE id = %s
+                    """,
+                    (valor, data_vencimento, status_mensalidade_id, mensalidade_id),
+                )
             conn.commit()
 
 
